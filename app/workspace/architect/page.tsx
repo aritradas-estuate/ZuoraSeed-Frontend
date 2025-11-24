@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
+
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Home,
   Bell,
   HelpCircle,
   User,
@@ -40,8 +43,10 @@ import {
   Zap,
   BookOpen,
   AlertTriangle,
+  MessageSquare,
+  Plus,
 } from "lucide-react";
-import { he } from "date-fns/locale";
+// import { he } from "date-fns/locale"; // (unused)
 
 type ConversationFlow =
   | "idle"
@@ -113,6 +118,10 @@ interface RatePlanData {
   description: string;
   charges: ChargeData[];
 }
+type ZuoraPayloadItem = {
+  zuora_api_type: string;
+  payload: any;
+};
 
 interface ProductData {
   name: string;
@@ -147,6 +156,31 @@ interface ValidationResult {
 // Add types near top of file
 type EnvKey = "api-sandbox" | "sandbox" | "production";
 
+interface StoredConversationSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const CHAT_CONVERSATIONS_KEY = "pm_chat_conversations_v1";
+const CHAT_MESSAGES_KEY_PREFIX = "pm_chat_messages_v1";
+
+const deriveTitleFromMessages = (messages: ChatMessage[]): string => {
+  if (!messages || messages.length === 0) return "New chat";
+
+  // Only consider user messages for title
+  const userMessages = messages.filter((m) => m.role === "user");
+  if (userMessages.length === 0) return "New chat";
+
+  const firstUser = userMessages[0];
+  const base = (firstUser.content || "").trim().split("\n")[0];
+  if (!base) return "New chat";
+
+  return base.length > 40 ? `${base.slice(0, 40)}…` : base;
+};
+
+
 function TypingIndicator() {
   return (
     <div className="flex gap-3">
@@ -156,9 +190,9 @@ function TypingIndicator() {
       <div className="flex-1">
         <div className="rounded-lg rounded-tl-none bg-gray-100 p-4">
           <div className="flex gap-1">
-            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s]"></div>
-            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s]"></div>
-            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400"></div>
+            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s]" />
+            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s]" />
+            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" />
           </div>
         </div>
       </div>
@@ -182,12 +216,83 @@ function Toast({ message, onClose }: { message: string; onClose: () => void }) {
   );
 }
 
+interface ChatHistorySidebarProps {
+  conversations: StoredConversationSummary[];
+  activeConversationId: string | null;
+  onNewConversation: () => void;
+  onSelectConversation: (id: string) => void;
+}
+
+function ChatHistorySidebar({
+  conversations,
+  activeConversationId,
+  onNewConversation,
+  onSelectConversation,
+}: ChatHistorySidebarProps) {
+  return (
+    <aside className="hidden w-64 flex-col border-r border-gray-200 bg-white/80 p-3 md:flex">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Conversations
+        </span>
+        <Button
+          size="icon"
+          variant="outline"
+          className="h-7 w-7 border-gray-300"
+          onClick={onNewConversation}
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+        {conversations.length === 0 && (
+          <p className="text-xs text-gray-500">
+            Start a new chat to see it here.
+          </p>
+        )}
+        {conversations.map((conv) => (
+          <button
+            key={conv.id}
+            type="button"
+            onClick={() => onSelectConversation(conv.id)}
+            className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
+              conv.id === activeConversationId
+                ? "bg-slate-900 text-white"
+                : "bg-transparent text-gray-800 hover:bg-gray-100"
+            }`}
+          >
+            <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white">
+              <MessageSquare className="h-3.5 w-3.5" />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate font-medium">
+                {conv.title || "New chat"}
+              </span>
+              <span className="truncate text-[10px] text-gray-500">
+                {new Date(conv.updatedAt).toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
 export default function WorkflowPage() {
   const [isConnected, setIsConnected] = useState(false);
+  const [zuoraGeneratedBody, setZuoraGeneratedBody] = useState(null);
+  const [showConnectedCard, setShowConnectedCard] = useState(false);
+
   const [environment, setEnvironment] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [currentFlow, setCurrentFlow] = useState<ConversationFlow>("idle");
+  const [executing, setExecuting] = useState(false);
+
   const [createProductStep, setCreateProductStep] =
     useState<CreateProductStep>("name");
   const [highlightConnect, setHighlightConnect] = useState(false);
@@ -228,35 +333,7 @@ export default function WorkflowPage() {
   const [viewScope, setViewScope] = useState<"specific" | "all">("specific");
   const [viewDetailType, setViewDetailType] = useState<string>("");
 
-
   const [copying, setCopying] = useState(false);
-
-const handleCopyPayload = async () => {
-  const text = generateProductPayload(); // uses your existing function
-  try {
-    setCopying(true);
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      // Fallback for older/insecure contexts
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-    setToastMessage("Copied payload to clipboard");
-  } catch (e) {
-    setToastMessage("Copy failed. Select and copy manually.");
-  } finally {
-    setCopying(false);
-  }
-};
-
-
 
   const [validationResults, setValidationResults] = useState<
     ValidationResult[]
@@ -266,6 +343,7 @@ const handleCopyPayload = async () => {
     ratePlanIds: string[];
     chargeIds: string[];
   } | null>(null);
+  const router = useRouter();
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -278,6 +356,65 @@ const handleCopyPayload = async () => {
   const [chatInput, setChatInput] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showPayload, setShowPayload] = useState(false);
+  const [apiPayloadText, setApiPayloadText] = useState<string | null>(null);
+
+  // ---- Conversation ID utilities ----
+  const CONV_STORAGE_PREFIX = "pm_conversation_id";
+
+  const sanitizeConvId = (id?: string | null) => {
+    if (!id) return null;
+    const trimmed = String(id).trim();
+    if (!trimmed || trimmed === "null" || trimmed === "undefined") return null;
+    // clean up any accidental suffixes like "198"
+    return trimmed.replace(/198$/, "");
+  };
+
+  const newConversationId = () => {
+    const base =
+      typeof crypto !== "undefined" && (crypto as any).randomUUID
+        ? (crypto as any).randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return `conv-${base}`;
+  };
+
+  const storageKeyForPersona = (persona: string) => {
+    const path =
+      typeof window !== "undefined" ? window.location.pathname : "root";
+    return `${CONV_STORAGE_PREFIX}:${persona}:${path}`;
+  };
+
+  const getOrCreateConversationId = (
+    persona: string,
+    opts?: { forceNew?: boolean }
+  ) => {
+    if (typeof window === "undefined") {
+      // SSR fallback – will be replaced on client
+      return `conv-${Date.now()}`;
+    }
+
+    const key = storageKeyForPersona(persona);
+
+    // migrate old key if it exists (legacy: "pm_conversation_id")
+    const legacy = sanitizeConvId(sessionStorage.getItem("pm_conversation_id"));
+    if (legacy) {
+      sessionStorage.removeItem("pm_conversation_id");
+      sessionStorage.setItem(key, legacy);
+    }
+
+    if (opts?.forceNew) {
+      const fresh = newConversationId();
+      sessionStorage.setItem(key, fresh);
+      return fresh;
+    }
+
+    const existing = sanitizeConvId(sessionStorage.getItem(key));
+    if (existing) return existing;
+
+    const created = newConversationId();
+    sessionStorage.setItem(key, created);
+    return created;
+  };
+
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [showNewMessagesPill, setShowNewMessagesPill] = useState(false);
   const [completedFlows, setCompletedFlows] = useState<CompletedFlow[]>([]);
@@ -287,15 +424,30 @@ const handleCopyPayload = async () => {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Chat history state
+  const [conversations, setConversations] = useState<
+    StoredConversationSummary[]
+  >([]);
+  const [activeConversationId, setActiveConversationId] =
+    useState<string | null>(null);
+
+  // [CHAT-API] Persona + Conversation ID
+  const CHAT_API_URL =
+    "https://7ajwemkf19.execute-api.us-east-2.amazonaws.com/demo/chat";
+  const CHAT_PERSONA = "Architect";
+
+  const [conversationId, setConversationId] = useState<string>(() => {
+    return getOrCreateConversationId(CHAT_PERSONA);
+  });
+
   const scrollToBottom = (smooth = true) => {
-    // Prefer anchor scrolling (more reliable with dynamic content)
     if (chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({
         behavior: smooth ? "smooth" : "auto",
       });
       return;
     }
-    // Fallback to container scroll
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTo({
         top: chatContainerRef.current.scrollHeight,
@@ -329,6 +481,149 @@ const handleCopyPayload = async () => {
     return Object.keys(next).length === 0;
   };
 
+  // hydrate chat history & initial active conversation from localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const initialConvId =
+      sanitizeConvId(conversationId) || getOrCreateConversationId(CHAT_PERSONA);
+    setConversationId(initialConvId);
+    setActiveConversationId(initialConvId);
+
+    let savedConversations: StoredConversationSummary[] = [];
+    try {
+      const raw = localStorage.getItem(CHAT_CONVERSATIONS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          savedConversations = parsed.filter(
+            (c: any) =>
+              c &&
+              typeof c.id === "string" &&
+              typeof c.title === "string" &&
+              typeof c.createdAt === "string" &&
+              typeof c.updatedAt === "string"
+          );
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+
+    const nowIso = new Date().toISOString();
+    if (!savedConversations.find((c) => c.id === initialConvId)) {
+      savedConversations = [
+        {
+          id: initialConvId,
+          title: "New chat",
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+        ...savedConversations,
+      ];
+    }
+    setConversations(savedConversations);
+
+    // load messages for active conversation
+    try {
+      const msgsKey = `${CHAT_MESSAGES_KEY_PREFIX}:${initialConvId}`;
+      const stored = localStorage.getItem(msgsKey);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          const restored: ChatMessage[] = parsed
+            .filter(
+              (m: any) =>
+                m &&
+                (m.role === "assistant" || m.role === "user") &&
+                typeof m.content === "string" &&
+                typeof m.timestamp === "string"
+            )
+            .map((m: any) => ({
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.timestamp),
+            }));
+          if (restored.length > 0) {
+            setChatMessages(restored);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []); // run once
+
+  // persist conversations list
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(
+        CHAT_CONVERSATIONS_KEY,
+        JSON.stringify(conversations)
+      );
+    } catch {
+      // ignore
+    }
+  }, [conversations]);
+
+  // persist messages for the active conversation + keep titles fresh
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!activeConversationId) return;
+
+    try {
+      const serialized = chatMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp.toISOString(),
+      }));
+      localStorage.setItem(
+        `${CHAT_MESSAGES_KEY_PREFIX}:${activeConversationId}`,
+        JSON.stringify(serialized)
+      );
+
+      const title = deriveTitleFromMessages(chatMessages);
+      const nowIso = new Date().toISOString();
+
+      setConversations((prev) => {
+        if (!prev || prev.length === 0) {
+          return [
+            {
+              id: activeConversationId,
+              title,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            },
+          ];
+        }
+
+        const existingIndex = prev.findIndex(
+          (c) => c.id === activeConversationId
+        );
+        const base: StoredConversationSummary =
+          existingIndex >= 0
+            ? { ...prev[existingIndex] }
+            : {
+                id: activeConversationId,
+                title,
+                createdAt: nowIso,
+                updatedAt: nowIso,
+              };
+
+        base.title = title;
+        base.updatedAt = nowIso;
+
+        const others = prev.filter((c) => c.id !== activeConversationId);
+        return [base, ...others].sort((a, b) =>
+          a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0
+        );
+      });
+    } catch {
+      // ignore
+    }
+  }, [chatMessages, activeConversationId]);
+
   useEffect(() => {
     if (chatContainerRef.current && isUserAtBottom) {
       chatContainerRef.current.scrollTop =
@@ -339,7 +634,13 @@ const handleCopyPayload = async () => {
     }
   }, [chatMessages, isUserAtBottom]);
 
-
+  useEffect(() => {
+    if (isConnected && currentFlow === "idle") {
+      setShowConnectedCard(true);
+      const t = setTimeout(() => setShowConnectedCard(false), 10_000);
+      return () => clearTimeout(t);
+    }
+  }, [isConnected, currentFlow]);
 
   useEffect(() => {
     const chatContainer = chatContainerRef.current;
@@ -350,9 +651,7 @@ const handleCopyPayload = async () => {
       const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
       const atBottom = distanceFromBottom <= 48;
       setIsUserAtBottom(atBottom);
-      if (atBottom) {
-        setShowNewMessagesPill(false);
-      }
+      if (atBottom) setShowNewMessagesPill(false);
     };
 
     chatContainer.addEventListener("scroll", handleScroll);
@@ -378,8 +677,167 @@ const handleCopyPayload = async () => {
     ]);
   };
 
+  // Map quick actions → starter prompts for the chat service
+  const actionPromptMap: Record<Exclude<ConversationFlow, "idle">, string> = {
+    "create-product": "I want to create a product.",
+    "update-product": "I want to update an existing product.",
+    "expire-product": "I want to expire a product by setting an end date.",
+    "view-product": "I want to view product details from my catalog.",
+  };
+
+  // Kick off an action and trigger the chat API with a starter prompt
+  const startActionWithChat = (action: Exclude<ConversationFlow, "idle">) => {
+    // respect your connection guard already in handleQuickAction
+    handleQuickAction(action);
+    if (!isConnected) return;
+
+    const userPrompt = actionPromptMap[action];
+    if (!userPrompt) return;
+
+    // show user's intent in the chat UI
+    addUserMessage(userPrompt);
+
+    // call your existing chat API integration
+    sendChatToApi(userPrompt);
+  };
+
+  // [CHAT-API] Send user message to backend and append assistant reply
+  const sendChatToApi = async (message: string) => {
+    try {
+      setIsTyping(true);
+      const safeConvId =
+        sanitizeConvId(conversationId) ??
+        getOrCreateConversationId(CHAT_PERSONA);
+
+      const res = await fetch(CHAT_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          persona: CHAT_PERSONA,
+          message,
+          conversation_id: safeConvId,
+        }),
+      });
+
+      // Read as text first (defensive against non-JSON error bodies)
+      const raw = await res.text();
+      let data: any = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        // leave data as {}
+      }
+
+      // Accept common shapes: prefer `answer`, then others
+      const reply: string =
+        data?.answer ??
+        data?.reply ??
+        data?.message ??
+        data?.assistant ??
+        data?.content ??
+        (res.ok
+          ? "(No reply content)"
+          : `Error: ${res.status} ${res.statusText}`);
+
+      // Pick up conversation id if backend returns/changes it
+      const returnedConvId =
+        data?.conversation_id || data?.conversationId || data?.conv_id;
+      if (returnedConvId && returnedConvId !== conversationId) {
+        setConversationId(returnedConvId);
+        if (typeof window !== "undefined") {
+          const key = storageKeyForPersona(CHAT_PERSONA);
+          sessionStorage.setItem(key, returnedConvId);
+        }
+        setActiveConversationId(returnedConvId);
+      }
+
+      // Optional: show citations compactly if provided
+      let citationsSuffix = "";
+      if (Array.isArray(data?.citations) && data.citations.length > 0) {
+        const firstThree = data.citations.slice(0, 3);
+        const labels = firstThree
+          .map((c: any) => c?.title || c?.id)
+          .join(", ");
+        const more =
+          data.citations.length > 3
+            ? ` +${data.citations.length - 3} more`
+            : "";
+        citationsSuffix = `\n\n— sources: ${labels}${more}`;
+      }
+
+      // === NEW: If the API returned zuora_api_payloads (array), build preview + product body ===
+    
+      // === Map zuora_api_payloads → unified createProduct body + preview ===
+      const payloadItems: ZuoraPayloadItem[] = Array.isArray(
+        data?.zuora_api_payloads
+      )
+        ? data.zuora_api_payloads
+        : [];
+
+      if (payloadItems.length > 0) {
+        // Build the body that your Lambda expects (product + ratePlans)
+        const unifiedBody = mapZuoraPayloadsToCreateBody(payloadItems);
+
+        // 👉 This is what handleExecute will send as "body"
+        setZuoraGeneratedBody(unifiedBody);
+
+        // Preview JSON in the right-side panel
+        const pretty = JSON.stringify(unifiedBody, null, 2);
+        setApiPayloadText(pretty);
+
+        // Optional: sync basics into UI summary
+        setProductData((prev) => ({
+          ...prev,
+          name: unifiedBody.name || prev.name,
+          sku: unifiedBody.productCode || prev.sku,
+          description: unifiedBody.description || prev.description,
+          startDate: unifiedBody.effectiveStartDate || prev.startDate,
+        }));
+
+        addAssistantMessage(
+          "I generated product and rate plan payloads for Zuora. Opening preview…",
+          200
+        );
+        handleGeneratePayload();
+      }
+
+
+
+      // Append the normal assistant reply (with compact citations if any)
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: String(reply) + citationsSuffix,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (e) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            "Sorry, I couldn't reach the chat service. Please try again in a moment.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+      requestAnimationFrame(() => scrollToBottom(true));
+    }
+  };
+
+  const ZUORA_ENV_BASE: Record<string, string> = {
+    "api-sandbox": "https://rest.test.zuora.com",
+    sandbox: "https://rest.test.zuora.com",
+    production: "https://rest.zuora.com",
+  };
+
+  const ZUORA_TOKEN_URL =
+    "https://7ajwemkf19.execute-api.us-east-2.amazonaws.com/demo/zuora-token";
+
   const handleConnect = async () => {
-    // validate fields first
     if (!validateConnectForm()) {
       addAssistantMessage(
         "Please fix the highlighted errors and try again.",
@@ -391,19 +849,42 @@ const handleCopyPayload = async () => {
     try {
       setConnecting(true);
 
-      const res = await fetch("/api/zuora/connect", {
+      const res = await fetch(ZUORA_TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment, clientId, clientSecret }),
-        cache: "no-store",
+        body: JSON.stringify({
+          clientId,
+          clientSecret,
+          environment,
+        }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const raw = await res.text();
+      let data: any = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        /* keep empty */
+      }
 
-      if (!data?.ok) {
+      const accessToken =
+        data.accessToken || data.access_token || data.token || null;
+      const tokenType = data.tokenType || data.token_type || "Bearer";
+      const expiresIn = Number(data.expiresIn ?? data.expires_in ?? 0);
+      const baseUrl =
+        data.baseUrl ||
+        data.base_url ||
+        ZUORA_ENV_BASE[environment as keyof typeof ZUORA_ENV_BASE];
+
+      if (!res.ok || !accessToken) {
+        const reason =
+          data?.error_description ||
+          data?.message ||
+          data?.error ||
+          `${res.status} ${res.statusText}`;
         setIsConnected(false);
         setTokenInfo(null);
-        setToastMessage(`Connection failed: ${data?.error ?? "Unknown error"}`);
+        setToastMessage(`Connection failed: ${reason}`);
         addAssistantMessage(
           "I couldn't connect. Please check your credentials and environment.",
           200
@@ -411,13 +892,12 @@ const handleCopyPayload = async () => {
         return;
       }
 
-      // success
       setIsConnected(true);
       setTokenInfo({
-        accessToken: data.accessToken,
-        tokenType: data.tokenType,
-        expiresIn: data.expiresIn,
-        baseUrl: data.baseUrl,
+        accessToken,
+        tokenType,
+        expiresIn,
+        baseUrl,
         scope: data.scope ?? null,
       });
       setToastMessage("Successfully connected to Zuora!");
@@ -449,13 +929,12 @@ const handleCopyPayload = async () => {
     setCurrentFlow(action);
     setShowPayload(false);
 
-    // Action confirmation message
     const actionNames = {
       "create-product": "Create Product",
       "update-product": "Update Product",
       "expire-product": "Expire Product",
       "view-product": "View Product",
-    };
+    } as const;
 
     if (action !== "idle") {
       addAssistantMessage(
@@ -466,19 +945,10 @@ const handleCopyPayload = async () => {
 
     if (action === "create-product") {
       setCreateProductStep("name");
-      addAssistantMessage("What's the Product name?", 900);
     } else if (action === "update-product") {
       setUpdateProductStep("identify");
-      addAssistantMessage(
-        "Sure. Could you please share the product name you'd like to update?",
-        900
-      );
     } else if (action === "expire-product") {
-      setExpireProductStep("identify");
-      addAssistantMessage(
-        "Please provide how you want to identify the product — by Product Name, Product ID, or SKU.",
-        900
-      );
+      // no-op for now
     } else if (action === "view-product") {
       setViewProductStep("choose-scope");
       addAssistantMessage(
@@ -488,12 +958,153 @@ const handleCopyPayload = async () => {
     }
   };
 
+  // NEW: create a fresh conversation
+  const handleNewConversation = () => {
+    const freshId = newConversationId();
+
+    setConversationId(freshId);
+    setActiveConversationId(freshId);
+
+    if (typeof window !== "undefined") {
+      const key = storageKeyForPersona(CHAT_PERSONA);
+      sessionStorage.setItem(key, freshId);
+    }
+
+    const nowIso = new Date().toISOString();
+    setConversations((prev) => [
+      {
+        id: freshId,
+        title: "New chat",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      },
+      ...prev,
+    ]);
+
+    setChatMessages([
+      {
+        role: "assistant",
+        content:
+          "Hi, I'm Zia — your AI configuration assistant. Let's connect to Zuora and manage your Product Catalog.",
+        timestamp: new Date(),
+      },
+    ]);
+
+    // reset flows + workspace state
+    setCurrentFlow("idle");
+    setCreateProductStep("name");
+    setUpdateProductStep("identify");
+    setExpireProductStep("identify");
+    setViewProductStep("choose-scope");
+
+    setProductData({
+      name: "",
+      sku: "",
+      description: "",
+      startDate: "",
+      ratePlans: [],
+    });
+    setCurrentRatePlan({ name: "", description: "", charges: [] });
+    setSelectedProduct(null);
+    setSelectedAttribute("");
+    setNewAttributeValue("");
+    setExpireMethod("");
+    setExpireDate("");
+    setViewScope("specific");
+    setViewDetailType("");
+    setValidationResults([]);
+    setExecutionResult(null);
+    setShowPayload(false);
+  };
+
+  // NEW: switch to a previous conversation
+  const handleSelectConversation = (id: string) => {
+    if (id === activeConversationId) return;
+
+    setActiveConversationId(id);
+    setConversationId(id);
+
+    if (typeof window !== "undefined") {
+      const key = storageKeyForPersona(CHAT_PERSONA);
+      sessionStorage.setItem(key, id);
+    }
+
+    let restored: ChatMessage[] | null = null;
+
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem(`${CHAT_MESSAGES_KEY_PREFIX}:${id}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            restored = parsed
+              .filter(
+                (m: any) =>
+                  m &&
+                  (m.role === "assistant" || m.role === "user") &&
+                  typeof m.content === "string" &&
+                  typeof m.timestamp === "string"
+              )
+              .map((m: any) => ({
+                role: m.role,
+                content: m.content,
+                timestamp: new Date(m.timestamp),
+              }));
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    setChatMessages(
+      restored && restored.length
+        ? restored
+        : [
+            {
+              role: "assistant",
+              content:
+                "Hi, I'm Zia — your AI configuration assistant. Let's connect to Zuora and manage your Product Catalog.",
+              timestamp: new Date(),
+            },
+          ]
+    );
+
+    // reset flows + workspace state
+    setCurrentFlow("idle");
+    setCreateProductStep("name");
+    setUpdateProductStep("identify");
+    setExpireProductStep("identify");
+    setViewProductStep("choose-scope");
+
+    setProductData({
+      name: "",
+      sku: "",
+      description: "",
+      startDate: "",
+      ratePlans: [],
+    });
+    setCurrentRatePlan({ name: "", description: "", charges: [] });
+    setSelectedProduct(null);
+    setSelectedAttribute("");
+    setNewAttributeValue("");
+    setExpireMethod("");
+    setExpireDate("");
+    setViewScope("specific");
+    setViewDetailType("");
+    setValidationResults([]);
+    setExecutionResult(null);
+    setShowPayload(false);
+  };
+
+  // [CHAT-API] integrate API call on submit
   const handleChatSubmit = () => {
     if (!chatInput.trim()) return;
 
     const input = chatInput.trim();
     addUserMessage(input);
 
+    // Fire product-manager flows (your existing logic)
     if (currentFlow === "create-product") {
       handleCreateProductFlow(input);
     } else if (currentFlow === "update-product") {
@@ -504,159 +1115,11 @@ const handleCopyPayload = async () => {
       handleViewProductFlow(input);
     }
 
+    // Also send every user message to chat API
+    void sendChatToApi(input);
+
     setChatInput("");
     requestAnimationFrame(() => scrollToBottom(true));
-  };
-
-  const handleCreateProductFlow = (input: string) => {
-    if (createProductStep === "name") {
-      setProductData((prev) => ({ ...prev, name: input }));
-      setCreateProductStep("sku");
-      setTimeout(() => {
-        addAssistantMessage(
-          "Great. What SKU would you like to use? Recommended patterns like PROD-001, but any format is OK."
-        );
-      }, 300);
-    } else if (createProductStep === "sku") {
-      setProductData((prev) => ({ ...prev, sku: input }));
-      setCreateProductStep("description");
-      setTimeout(() => {
-        addAssistantMessage("Add a short description? ");
-      }, 300);
-    } else if (createProductStep === "description") {
-      setProductData((prev) => ({ ...prev, description: input }));
-      setCreateProductStep("start-date");
-      setTimeout(() => {
-        addAssistantMessage(
-          "When should the product become effective? (e.g., 2025-01-01)"
-        );
-      }, 300);
-    } else if (createProductStep === "start-date") {
-      setProductData((prev) => ({ ...prev, startDate: input }));
-      setCreateProductStep("add-rate-plan");
-      setTimeout(() => {
-        addAssistantMessage("Would you like to add a Rate Plan now?");
-      }, 300);
-    } else if (createProductStep === "add-rate-plan") {
-      if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
-        setCreateProductStep("rate-plan-name");
-        setTimeout(() => {
-          addAssistantMessage("Rate Plan name?");
-        }, 300);
-      } else {
-        setCreateProductStep("summary");
-        setTimeout(() => {
-          addAssistantMessage(
-            "Perfect! Here's your product summary. Review and generate the payload when ready."
-          );
-        }, 300);
-      }
-    } else if (createProductStep === "rate-plan-name") {
-      setCurrentRatePlan((prev) => ({ ...prev, name: input }));
-      setCreateProductStep("rate-plan-description");
-      setTimeout(() => {
-        addAssistantMessage("Description? ");
-      }, 300);
-    } else if (createProductStep === "rate-plan-description") {
-      setCurrentRatePlan((prev) => ({ ...prev, description: input }));
-      setCreateProductStep("add-charges");
-      setTimeout(() => {
-        addAssistantMessage("Add charges to this rate plan?");
-      }, 300);
-    } else if (createProductStep === "add-charges") {
-      if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
-        setCreateProductStep("charge-type");
-        setTimeout(() => {
-          addAssistantMessage(
-            "Choose a charge type:\n1. Flat Fee\n2. Per-Unit\n3. Tiered\n4. Volume\n5. Usage\n6. One-Time\n7. Discount\n\nType the number or name."
-          );
-        }, 300);
-      } else {
-        // Save rate plan and ask for another
-        setProductData((prev) => ({
-          ...prev,
-          ratePlans: [...prev.ratePlans, currentRatePlan],
-        }));
-        setCurrentRatePlan({ name: "", description: "", charges: [] });
-        setCreateProductStep("another-rate-plan");
-        setTimeout(() => {
-          addAssistantMessage("Add another Rate Plan?");
-        }, 300);
-      }
-    } else if (createProductStep === "charge-type") {
-      const chargeTypeMap: Record<string, ChargeType> = {
-        "1": "flat-fee",
-        "flat fee": "flat-fee",
-        flat: "flat-fee",
-        "2": "per-unit",
-        "per-unit": "per-unit",
-        "per unit": "per-unit",
-        "3": "tiered",
-        tiered: "tiered",
-        "4": "volume",
-
-        volume: "volume",
-        "5": "usage",
-        usage: "usage",
-        "6": "one-time",
-        "one-time": "one-time",
-        "one time": "one-time",
-        "7": "discount",
-        discount: "discount",
-      };
-
-      const selectedType = chargeTypeMap[input.toLowerCase()];
-      if (selectedType) {
-        setCurrentCharge((prev) => ({ ...prev, type: selectedType }));
-        setCreateProductStep("charge-fields");
-        setTimeout(() => {
-          askChargeFields(selectedType);
-        }, 300);
-      } else {
-        setTimeout(() => {
-          addAssistantMessage(
-            "Please choose a valid charge type (1-7 or type the name)."
-          );
-        }, 300);
-      }
-    } else if (createProductStep === "charge-fields") {
-      // Handle charge field inputs based on type
-      handleChargeFieldInput(input);
-    } else if (createProductStep === "another-charge") {
-      if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
-        setCreateProductStep("charge-type");
-        setTimeout(() => {
-          addAssistantMessage(
-            "Choose a charge type:\n1. Flat Fee\n2. Per-Unit\n3. Tiered\n4. Volume\n5. Usage\n6. One-Time\n7. Discount"
-          );
-        }, 300);
-      } else {
-        // Save rate plan with charges
-        setProductData((prev) => ({
-          ...prev,
-          ratePlans: [...prev.ratePlans, currentRatePlan],
-        }));
-        setCurrentRatePlan({ name: "", description: "", charges: [] });
-        setCreateProductStep("another-rate-plan");
-        setTimeout(() => {
-          addAssistantMessage("Add another Rate Plan?");
-        }, 300);
-      }
-    } else if (createProductStep === "another-rate-plan") {
-      if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
-        setCreateProductStep("rate-plan-name");
-        setTimeout(() => {
-          addAssistantMessage("Rate Plan name?");
-        }, 300);
-      } else {
-        setCreateProductStep("summary");
-        setTimeout(() => {
-          addAssistantMessage(
-            "Perfect! Here's your complete product configuration. Review and proceed when ready."
-          );
-        }, 300);
-      }
-    }
   };
 
   const askChargeFields = (chargeType: ChargeType) => {
@@ -681,14 +1144,11 @@ const handleCopyPayload = async () => {
   };
 
   const handleChargeFieldInput = (input: string) => {
-    const parts = input.split(",").map((p) => p.trim());
-
-    // Save charge with fields
     const newCharge: ChargeData = {
       ...currentCharge,
       name: `${currentCharge.type} charge`,
       fields: {
-        input: input, // Store raw input for display
+        input: input,
       },
     };
 
@@ -705,9 +1165,12 @@ const handleCopyPayload = async () => {
     }, 300);
   };
 
+  const handleCreateProductFlow = (input: string) => {
+    // your flow for create-product can be filled here later
+  };
+
   const handleUpdateProductFlow = (input: string) => {
     if (updateProductStep === "identify") {
-      // Simulate fetching product
       const mockProduct = {
         id: "P-000234",
         name: input,
@@ -822,7 +1285,6 @@ const handleCopyPayload = async () => {
 
   const handleExpireProductFlow = (input: string) => {
     if (expireProductStep === "identify") {
-      // Simulate fetching product
       const mockProduct = {
         id: "P-000567",
         name: input,
@@ -971,7 +1433,6 @@ const handleCopyPayload = async () => {
         }, 300);
       }
     } else if (viewProductStep === "identify") {
-      // Simulate fetching product
       const mockProduct = {
         id: "P-000234",
         name: input,
@@ -1101,7 +1562,6 @@ const handleCopyPayload = async () => {
     setTimeout(() => {
       addAssistantMessage("Running validation checks...");
 
-      // Simulate validation
       setTimeout(() => {
         const results: ValidationResult[] = [
           {
@@ -1128,46 +1588,137 @@ const handleCopyPayload = async () => {
     }, 300);
   };
 
-  const handleExecute = () => {
-    setCreateProductStep("execute");
-    setTimeout(() => {
-      addAssistantMessage("Creating product in Zuora...");
+  // Build correct Zuora Product JSON with cleanup
+  const buildZuoraBody = () => {
+    const raw: any = {
+      Name: productData?.name ?? null,
+      Description: productData?.description ?? null,
+      EffectiveStartDate: productData?.startDate ?? null,
+      EffectiveEndDate: "2099-12-31",
+      SKU: productData?.sku ?? null,
+      ProductRatePlans: (productData?.ratePlans || []).map((rp) => ({
+        Name: rp.name,
+        Description: rp.description || "",
+        ProductRatePlanCharges: (rp.charges || []).map((ch) => ({
+          Name: ch.name,
+          ChargeType: ch.type,
+          Fields: ch.fields || {},
+        })),
+      })),
+    };
 
-      // Simulate API calls
-      setTimeout(() => {
-        const result = {
-          productId:
-            "PROD-" + Math.random().toString(36).substr(2, 9).toUpperCase(),
-          ratePlanIds: productData.ratePlans.map(
-            () => "RP-" + Math.random().toString(36).substr(2, 9).toUpperCase()
-          ),
-          chargeIds: productData.ratePlans.flatMap((rp) =>
-            rp.charges.map(
-              () =>
-                "CHG-" + Math.random().toString(36).substr(2, 9).toUpperCase()
-            )
-          ),
-        };
-        setExecutionResult(result);
+    Object.keys(raw).forEach((k) => {
+      const v = raw[k];
+      if (
+        v === null ||
+        v === undefined ||
+        v === "" ||
+        (Array.isArray(v) && v.length === 0)
+      ) {
+        delete raw[k];
+      }
+    });
 
-        addAssistantMessage(
-          `✅ Created!\n\nProductId: ${
-            result.productId
-          }\nRatePlanIds: ${result.ratePlanIds.join(
-            ", "
-          )}\nChargeIds: ${result.chargeIds.join(
-            ", "
-          )}\n\nWhat would you like to do next?\n1. Create subscription\n2. Add more plans\n3. Go home`
-        );
-
-        setToastMessage("Product created successfully in Zuora!");
-
-        setTimeout(() => {
-          completeCurrentFlow();
-        }, 3000);
-      }, 2000);
-    }, 300);
+    return raw;
   };
+
+  const handleExecute = async () => {
+    if (!clientId || !clientSecret) {
+      setToastMessage("Client ID/Secret required to create product");
+      addAssistantMessage("Please enter Client ID and Client Secret.");
+      return;
+    }
+  
+    if (!zuoraGeneratedBody) {
+      setToastMessage("No generated Zuora body found.");
+      addAssistantMessage("I could not find the generated product payload.");
+      return;
+    }
+  
+    setCreateProductStep("execute");
+    setExecuting(true);
+    addAssistantMessage("Creating product in Zuora…");
+  
+    try {
+      const payload = {
+        clientId,
+        clientSecret,
+        body: zuoraGeneratedBody, // unified body with product + ratePlans
+      };
+  
+      console.log("🔥 FINAL PAYLOAD SENT TO ZUORA:");
+      console.log(JSON.stringify(payload, null, 2));
+  
+      const res = await fetch(
+        "https://7ajwemkf19.execute-api.us-east-2.amazonaws.com/demo/zuora/product",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+  
+      const raw = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        /* ignore parse error, will fall back below */
+      }
+  
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || `${res.status}`);
+      }
+  
+      // ---- NEW: map API response → IDs ----
+      const productId: string | undefined =
+        data.productId || data.Id || data.id;
+  
+      const ratePlanIds: string[] = Array.isArray(data.ratePlans)
+        ? data.ratePlans
+            .map((rp: any) => rp.Id || rp.id)
+            .filter(Boolean)
+        : [];
+  
+      const chargeIds: string[] = Array.isArray(data.charges)
+        ? data.charges
+            .map((ch: any) => ch.Id || ch.id)
+            .filter(Boolean)
+        : [];
+  
+      // store in state if you want to show in a card later
+      setExecutionResult({
+        productId: productId ?? "",
+        ratePlanIds,
+        chargeIds,
+      });
+  
+      // build nice chat message with IDs
+      let msg =
+        data.message ||
+        "✅ Product + RatePlans + Charges created successfully!";
+  
+      if (productId) {
+        msg += `\n\nProduct Id: ${productId}`;
+      }
+      if (ratePlanIds.length) {
+        msg += `\nRatePlan Ids:\n- ${ratePlanIds.join("\n- ")}`;
+      }
+      if (chargeIds.length) {
+        msg += `\nCharge Ids:\n- ${chargeIds.join("\n- ")}`;
+      }
+  
+      addAssistantMessage(msg);
+      setToastMessage(data.message || "Product created successfully!");
+    } catch (err: any) {
+      console.error("Create product error:", err);
+      addAssistantMessage("❌ Product creation failed.");
+      setToastMessage(err.message ?? "Product creation failed");
+    } finally {
+      setExecuting(false);
+    }
+  };
+  
 
   const generateProductPayload = () => {
     const payload = {
@@ -1215,11 +1766,11 @@ const handleCopyPayload = async () => {
     const completedFlow: CompletedFlow = {
       id: Date.now().toString(),
       type: currentFlow,
-      title: flowTitles[currentFlow] || "Completed Flow",
+      title: (flowTitles as any)[currentFlow] || "Completed Flow",
       timestamp: new Date(),
       isExpanded: false,
       messages: chatMessages.slice(1),
-      summary: flowSummaries[currentFlow],
+      summary: (flowSummaries as any)[currentFlow],
     };
 
     setCompletedFlows((prev) => [...prev, completedFlow]);
@@ -1286,11 +1837,112 @@ const handleCopyPayload = async () => {
     },
   ];
 
+  const activeConversation =
+  conversations.find((c) => c.id === activeConversationId) || null;
+
+const activeChatTitle = activeConversation?.title || "New chat";
+
+
+
+const mapZuoraPayloadsToCreateBody = (
+  items: ZuoraPayloadItem[]
+) => {
+  const productItem = items.find(
+    (p) => p.zuora_api_type?.toLowerCase() === "product"
+  );
+  const product = productItem?.payload ?? {};
+
+  const ratePlans = items
+    .filter((p) => p.zuora_api_type?.toLowerCase() === "rateplan")
+    .map((rp) => {
+      const p = rp.payload || {};
+      return {
+        name: p.name ?? p.Name ?? "",
+        chargeModel:
+          p.chargeModel ??
+          p.ChargeModel ??
+          (p.charge_type === "usage" ? "usage" : "recurring"),
+        chargeType: p.chargeType ?? p.ChargeType ?? "",
+        price: p.price ?? p.Price,
+        billingCycle: p.billingCycle ?? p.BillingPeriod,
+        billingRule: p.billingRule ?? p.BillingTiming,
+        unitOfMeasure:
+          p.unitOfMeasure ?? p.UnitOfMeasure ?? p.unit_of_measure ?? "",
+        includedUnits: p.includedUnits ?? p.IncludedUnits,
+        overagePrice: p.overagePrice ?? p.OveragePrice,
+        overageEnabled:
+          p.overageEnabled ?? p.OverageEnabled ?? p.overage_enabled,
+      };
+    });
+
+  return {
+    name: product.name ?? product.Name ?? "",
+    productCode:
+      product.productCode ??
+      product.ProductCode ??
+      product.SKU ??
+      product.sku ??
+      "",
+    description: product.description ?? product.Description ?? "",
+    effectiveStartDate:
+      product.effectiveStartDate ??
+      product.EffectiveStartDate ??
+      product.startDate ??
+      "",
+    effectiveEndDate:
+      product.effectiveEndDate ??
+      product.EffectiveEndDate ??
+      "2099-12-31",
+    currencies:
+      product.currencies ??
+      product.Currencies ??
+      (product.currency ? [product.currency] : []),
+    ratePlans,
+  };
+};
+
+const handleCopyPayload = async () => {
+  // Prefer AI-generated preview payload, fallback to local generator
+  const text = apiPayloadText ?? generateProductPayload();
+
+  try {
+    setCopying(true);
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setToastMessage("Copied payload to clipboard");
+  } catch (e) {
+    setToastMessage("Copy failed. Select and copy manually.");
+  } finally {
+    setCopying(false);
+  }
+};
+
+
   return (
     <div className="flex min-h-screen flex-col bg-gray-50">
       <header className="border-b border-gray-200 bg-slate-800 text-white">
         <div className="flex h-14 items-center justify-between px-6">
           <div className="flex items-center gap-6">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-gray-300 hover:text-white"
+              onClick={() => router.push("/")}
+              aria-label="Home"
+            >
+              <Home className="h-5 w-5" />
+            </Button>
+
             <Link href="/" className="flex items-center gap-2">
               <span className="text-xl font-bold">Zuora Seed</span>
               <Badge className="bg-cyan-500 text-xs font-semibold hover:bg-cyan-500">
@@ -1352,50 +2004,64 @@ const handleCopyPayload = async () => {
         </div>
       </header>
       {/* Page Title */}
-      <div className="mb-1  bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/60">
+      <div className="mb-1 bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/60">
         <div className="mx-auto flex h-14 max-w-7xl items-center px-6">
           <h1 className="text-base font-semibold text-gray-900">
             Architect 
           </h1>
         </div>
       </div>
-    <div className="flex flex-1 overflow-hidden min-h-0">
+
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        {/* NEW: Chat history sidebar */}
+        <ChatHistorySidebar
+          conversations={conversations}
+          activeConversationId={activeConversationId}
+          onNewConversation={handleNewConversation}
+          onSelectConversation={handleSelectConversation}
+        />
 
         {/* Left Panel - Chat Assistant */}
-        <div className="flex w-[40%] flex-col border-r border-gray-200
-                  bg-gradient-to-b from-[#F9FAFB] to-white min-h-0"   style={{ height: "87vh" }}>
-          <div className="border-b border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">
-                Chat Assistant
-              </h2>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-gray-600 hover:text-gray-900"
-                onClick={() => {
-                  setChatMessages([
-                    {
-                      role: "assistant",
-                      content:
-                        "Hi, I'm Zia — your AI configuration assistant. Let's connect to Zuora and manage your Product Catalog.",
-                      timestamp: new Date(),
-                    },
-                  ]);
-                  setCurrentFlow("idle");
-                  setCompletedFlows([]);
-                }}
-              >
-                <RotateCcw className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+        <div
+          className="flex w-[38%] flex-col border-r border-gray-200
+                  bg-gradient-to-b from-[#F9FAFB] to-white min-h-0"
+          style={{ height: "87vh" }}
+        >
+<div className="border-b border-gray-200 p-6">
+  <div className="flex items-center justify-between">
+    <div className="flex flex-col">
+      <h2 className="max-w-xs truncate text-sm font-semibold text-gray-900">
+        {activeChatTitle}
+      </h2>
+      <span className="text-xs text-gray-500">Chat Assistant</span>
+    </div>
+    <Button
+      variant="ghost"
+      size="sm"
+      className="text-gray-600 hover:text-gray-900"
+      onClick={() => {
+        setChatMessages([
+          {
+            role: "assistant",
+            content:
+              "Hi, I'm Zia — your AI configuration assistant. Let's connect to Zuora and manage your Product Catalog.",
+            timestamp: new Date(),
+          },
+        ]);
+        setCurrentFlow("idle");
+        setCompletedFlows([]);
+      }}
+    >
+      <RotateCcw className="h-4 w-4" />
+    </Button>
+  </div>
+</div>
 
           <div
-      ref={chatContainerRef}
-      className="relative flex-1 overflow-y-auto p-6"
-      style={{ overscrollBehavior: "contain", scrollbarGutter: "stable" }}
-    >
+            ref={chatContainerRef}
+            className="relative flex-1 overflow-y-auto p-6"
+            style={{ overscrollBehavior: "contain", scrollbarGutter: "stable" }}
+          >
             <div className="space-y-4">
               {completedFlows.map((flow) => (
                 <Card key={flow.id} className="border-green-200 bg-green-50">
@@ -1475,8 +2141,9 @@ const handleCopyPayload = async () => {
               ))}
 
               {isTyping && <TypingIndicator />}
+
               {/* bottom anchor for smooth scroll */}
-               <div ref={chatBottomRef} /> {/* keep this anchor */}
+              <div ref={chatBottomRef} />
 
               {currentFlow === "create-product" &&
                 createProductStep === "name" &&
@@ -1597,11 +2264,12 @@ const handleCopyPayload = async () => {
                         </div>
                       ))}
                       <Button
-                        className="mt-4 w-full bg-green-600 hover:bg-green-700"
+                        className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-60"
                         onClick={handleExecute}
+                        disabled={executing}
                       >
                         <CheckCircle2 className="mr-2 h-4 w-4" />
-                        Create Product in Zuora
+                        {executing ? "Creating..." : "Create Product in Zuora"}
                       </Button>
                     </CardContent>
                   </Card>
@@ -1823,52 +2491,11 @@ const handleCopyPayload = async () => {
                   </Card>
                 )}
 
-              {currentFlow === "idle" && !showPayload && (
-                <div className="mt-6">
-                  <p className="mb-3 text-sm font-medium text-gray-700">
-                    Suggested Actions
-                  </p>
-                  <div className="space-y-2">
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => handleQuickAction("create-product")}
-                    >
-                      <Package className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">Create Product</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => handleQuickAction("update-product")}
-                    >
-                      <Edit className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">Update Product</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => handleQuickAction("expire-product")}
-                    >
-                      <Clock className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">Expire Product</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => handleQuickAction("view-product")}
-                    >
-                      <Eye className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">View Product</span>
-                    </Button>
-                  </div>
-                </div>
-              )}
+          
 
               {showNewMessagesPill && (
                 <button
-                 onClick={() => scrollToBottom(true)}
-
+                  onClick={() => scrollToBottom(true)}
                   className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-full bg-[#2B6CF3] px-4 py-2 text-sm font-medium text-white shadow-lg"
                 >
                   <span>New messages</span>
@@ -1879,32 +2506,36 @@ const handleCopyPayload = async () => {
           </div>
 
           <div className="sticky bottom-0 border-t border-gray-200 bg-white p-4">
-            <div className="flex gap-2">
-              <Input
-                ref={chatInputRef}
-                placeholder="Ask about your catalog setup or type a command…"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    handleChatSubmit();
-                  }
-                }}
-                className="flex-1"
-              />
-              <Button
-                size="icon"
-                className="bg-[#2B6CF3] hover:bg-[#2456c9]"
-                onClick={handleChatSubmit}
-                disabled={!chatInput.trim()}
-              >
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-gray-500">
-              Try commands: /validate, /catalog status, /sync, /help
-            </p>
-          </div>
+  <div className="relative">
+    <Input
+      ref={chatInputRef}
+      placeholder="Ask about your catalog setup or type a command…"
+      value={chatInput}
+      onChange={(e) => setChatInput(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          handleChatSubmit();
+        }
+      }}
+      className="w-full pr-11"
+    />
+
+    <Button
+      type="button"
+      size="icon"
+      onClick={handleChatSubmit}
+      disabled={!chatInput.trim()}
+      className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#2B6CF3] hover:bg-[#2456c9] disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <Send className="h-4 w-4" />
+    </Button>
+  </div>
+
+  <p className="mt-2 text-xs text-gray-500">
+    Try commands: /validate, /catalog status, /sync, /help
+  </p>
+</div>
+
         </div>
 
         {/* Right Panel - Zuora Workspace */}
@@ -1916,9 +2547,7 @@ const handleCopyPayload = async () => {
             <div className="mx-auto max-w-2xl">
               <div
                 className={`connection-card rounded-lg border bg-white p-8 shadow-sm transition-all duration-500 ${
-                  highlightConnect
-                    ? "border-gray-200"
-                    : "border-gray-200"
+                  highlightConnect ? "border-gray-200" : "border-gray-200"
                 }`}
               >
                 <div className="mb-6 flex items-start gap-3">
@@ -2021,11 +2650,11 @@ const handleCopyPayload = async () => {
                     <div className="space-y-1 text-xs text-gray-600">
                       <p>
                         <span className="font-medium">API Sandbox:</span>{" "}
-                        https://rest.test.zuora.com
+                        https://rest.apisandbox.zuora.com
                       </p>
                       <p>
                         <span className="font-medium">Sandbox/Test:</span>{" "}
-                        https://rest.test.zuora.com
+                        https://rest.sandbox.zuora.com
                       </p>
                       <p>
                         <span className="font-medium">Production:</span>{" "}
@@ -2058,8 +2687,9 @@ const handleCopyPayload = async () => {
                   </CardHeader>
                   <CardContent>
                     <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-sm text-green-400">
-                      {generateProductPayload()}
+                      {apiPayloadText ?? generateProductPayload()}
                     </pre>
+
                     <div className="mt-4 flex gap-2">
                       <Button
                         className="bg-[#2B6CF3] hover:bg-[#2456c9]"
@@ -2067,71 +2697,43 @@ const handleCopyPayload = async () => {
                       >
                         Validate & Deploy
                       </Button>
-                      <Button variant="outline" onClick={handleCopyPayload} disabled={copying}>
-  {copying ? "Copying…" : "Copy to Clipboard"}
-</Button>
-
+                      <Button
+                        variant="outline"
+                        onClick={handleCopyPayload}
+                        disabled={copying}
+                      >
+                        {copying ? "Copying…" : "Copy to Clipboard"}
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
               )}
 
-              {currentFlow === "idle" && !showPayload && (
-                <div className="mx-auto max-w-2xl">
-                  <Card className="border-green-200 bg-green-50">
-                    <CardContent className="flex items-center gap-3 p-6">
-                      <CheckCircle2 className="h-8 w-8 text-green-600" />
-                      <div>
-                        <h3 className="text-lg font-semibold text-green-900">
-                          ✅ Connected to Zuora Sandbox
-                        </h3>
-                        <p className="text-sm text-green-700">
-                          Environment:{" "}
-                          {environment === "api-sandbox"
-                            ? "API Sandbox"
-                            : environment === "sandbox"
-                            ? "Sandbox / Test"
-                            : "Production"}
-                        </p>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <div className="mt-8">
-                    <h3 className="mb-4 text-lg font-semibold text-gray-900">
-                      Quick Actions
-                    </h3>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <Button
-                        variant="outline"
-                        className="h-auto flex-col items-start gap-2 p-4 hover:border-[#2B6CF3] hover:bg-blue-50 bg-transparent"
-                        onClick={() => handleQuickAction("create-product")}
-                      >
-                        <Package className="h-6 w-6 text-[#2B6CF3]" />
-                        <div className="text-left">
-                          <div className="font-semibold">Create Product</div>
-                          <div className="text-xs text-gray-600">
-                            Add a new product to your catalog
-                          </div>
+              {isConnected &&
+                showConnectedCard &&
+                currentFlow === "idle" &&
+                !showPayload && (
+                  <div className="mx-auto max-w-2xl">
+                    <Card className="border-green-200 bg-green-50">
+                      <CardContent className="flex items-center gap-3">
+                        <CheckCircle2 className="h-8 w-8 text-green-600" />
+                        <div>
+                          <h3 className="text-lg font-semibold text-green-900">
+                            ✅ Connected to Zuora
+                          </h3>
+                          <p className="text-sm text-green-700">
+                            Environment:{" "}
+                            {environment === "api-sandbox"
+                              ? "API Sandbox"
+                              : environment === "sandbox"
+                              ? "Sandbox / Test"
+                              : "Production"}
+                          </p>
                         </div>
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-auto flex-col items-start gap-2 p-4 hover:border-[#2B6CF3] hover:bg-blue-50 bg-transparent"
-                        onClick={() => handleQuickAction("view-product")}
-                      >
-                        <Eye className="h-6 w-6 text-[#2B6CF3]" />
-                        <div className="text-left">
-                          <div className="font-semibold">View Product</div>
-                          <div className="text-xs text-gray-600">
-                            Browse your product catalog
-                          </div>
-                        </div>
-                      </Button>
-                    </div>
+                      </CardContent>
+                    </Card>
                   </div>
-                </div>
-              )}
+                )}
             </div>
           )}
         </div>
