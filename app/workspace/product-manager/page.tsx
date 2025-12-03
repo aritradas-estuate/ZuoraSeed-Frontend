@@ -40,8 +40,7 @@ import {
   AlertTriangle,
   MessageSquare,
   Plus,
-  Trash2,           // ⬅️ add this
-
+  Trash2, // ⬅️ add this
 } from "lucide-react";
 import {
   Card,
@@ -117,15 +116,14 @@ interface ChargeData {
 }
 interface ZuoraStep {
   id: string;
-  type: string;              // e.g. "product", "rateplan", "rateplancharge"
-  title: string;             // UI title (derived from type)
-  description: string;       // UI description
-  json: string;              // JSON string of payload
-  error?: string | null;     // backend/LLM error, if any
+  type: string; // e.g. "product", "rateplan", "rateplancharge"
+  title: string; // UI title (derived from type)
+  description: string; // UI description
+  json: string; // JSON string of payload
+  error?: string | null; // backend/LLM error, if any
   jsonError?: string | null; // local JSON parse error when editing
-  expanded: boolean;         // for collapsible cards
+  expanded: boolean; // for collapsible cards
 }
-
 
 interface RatePlanData {
   name: string;
@@ -212,18 +210,27 @@ function TypingIndicator() {
   );
 }
 
-function Toast({ message, onClose }: { message: string; onClose: () => void }) {
+function Toast({
+  message,
+  type,
+  onClose,
+}: {
+  message: string;
+  type: "success" | "error";
+  onClose: () => void;
+}) {
   useEffect(() => {
     const timer = setTimeout(onClose, 3000);
     return () => clearTimeout(timer);
   }, [onClose]);
 
   return (
-    <div className="fixed bottom-24 right-8 z-50 rounded-lg bg-green-600 px-6 py-3 text-white shadow-lg">
-      <div className="flex items-center gap-2">
-        <CheckCircle2 className="h-5 w-5" />
-        <span className="font-medium">{message}</span>
-      </div>
+    <div
+      className={`fixed bottom-8 right-6 z-50 px-5 py-3 rounded-lg shadow-lg text-white font-medium transition-all ${
+        type === "error" ? "bg-red-600" : "bg-green-600"
+      }`}
+    >
+      {message}
     </div>
   );
 }
@@ -233,84 +240,141 @@ interface ChatHistorySidebarProps {
   activeConversationId: string | null;
   onNewConversation: () => void;
   onSelectConversation: (id: string) => void;
-  onDeleteConversation: (id: string) => void; // ⬅️ added
+  onDeleteConversation: (id: string) => void;
+  onStartAction: (action: Exclude<ConversationFlow, "idle">) => void; // ⬅️ ADD THIS
 }
-
 
 function ChatHistorySidebar({
   conversations,
   activeConversationId,
   onNewConversation,
   onSelectConversation,
-  onDeleteConversation, // ⬅️ make sure this is here
+  onDeleteConversation,
+  onStartAction, // ⬅️ ADD THIS
 }: ChatHistorySidebarProps) {
   return (
     <aside className="hidden w-64 flex-col border-r border-gray-200 bg-white/80 p-3 md:flex">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Conversations
-        </span>
-        <Button
-          size="icon"
-          variant="outline"
-          className="h-7 w-7 border-gray-300"
-          onClick={onNewConversation}
-        >
-          <Plus className="h-4 w-4" />
-        </Button>
-      </div>
+      {/* CHAT HISTORY - 40% HEIGHT */}
+      <div className="flex flex-col h-[40vh]">
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Conversations
+          </span>
 
-      <div className="flex-1 space-y-1 overflow-y-auto pr-1">
-        {conversations.length === 0 && (
-          <p className="text-xs text-gray-500">
-            Start a new chat to see it here.
-          </p>
-        )}
-
-        {conversations.map((conv) => (
-          <button
-            key={conv.id}
-            type="button"
-            onClick={() => onSelectConversation(conv.id)}
-            className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-xs transition ${
-              conv.id === activeConversationId
-                ? "bg-slate-900 text-white"
-                : "bg-transparent text-gray-800 hover:bg-gray-100"
-            }`}
+          <Button
+            size="icon"
+            variant="outline"
+            className="h-7 w-7 border-gray-300"
+            onClick={onNewConversation}
           >
-            {/* left: icon + title/date */}
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white">
-                <MessageSquare className="h-3.5 w-3.5" />
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-medium">
-                  {conv.title || "New chat"}
-                </span>
-                <span className="truncate text-[10px] text-gray-500">
-                  {new Date(conv.updatedAt).toLocaleString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                  })}
-                </span>
-              </div>
-            </div>
+            <Plus className="h-4 w-4" />
+          </Button>
+        </div>
 
-            {/* right: delete icon */}
+        <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+          {conversations.length === 0 && (
+            <p className="text-xs text-gray-500">
+              Start a new chat to see it here.
+            </p>
+          )}
+
+          {conversations.map((conv) => (
             <button
+              key={conv.id}
               type="button"
-              onClick={(e) => {
-                e.stopPropagation(); // don’t open chat when clicking delete
-                onDeleteConversation(conv.id);
-              }}
-              className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded hover:bg-slate-900/10"
-              aria-label="Delete conversation"
+              onClick={() => onSelectConversation(conv.id)}
+              className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-xs transition ${
+                conv.id === activeConversationId
+                  ? "bg-slate-900 text-white"
+                  : "bg-transparent text-gray-800 hover:bg-gray-100"
+              }`}
             >
-              <Trash2 className="h-3 w-3" />
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white">
+                  <MessageSquare className="h-3.5 w-3.5" />
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate font-medium">
+                    {conv.title || "New chat"}
+                  </span>
+                  <span className="truncate text-[10px] text-gray-500">
+                    {new Date(conv.updatedAt).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                    })}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteConversation(conv.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.stopPropagation();
+                    onDeleteConversation(conv.id);
+                  }
+                }}
+                className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded hover:bg-slate-900/10 cursor-pointer"
+              >
+                <Trash2 className="h-3 w-3" />
+              </div>
             </button>
-          </button>
-        ))}
+          ))}
+        </div>
       </div>
+
+      {/* SUGGESTED ACTIONS - 30% HEIGHT */}
+      <div className="h-[40vh] mt-4 overflow-y-auto">
+        <p className="mb-3 text-sm font-medium text-gray-700">
+          Suggested Actions
+        </p>
+
+        <div className="space-y-2">
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
+            onClick={() => onStartAction("create-product")}
+          >
+            <Package className="h-4 w-4 text-[#2B6CF3]" />
+            <span className="text-sm">Create Product</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
+            onClick={() => onStartAction("update-product")}
+          >
+            <Edit className="h-4 w-4 text-[#2B6CF3]" />
+            <span className="text-sm">Update Product</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
+            onClick={() => onStartAction("expire-product")}
+          >
+            <Clock className="h-4 w-4 text-[#2B6CF3]" />
+            <span className="text-sm">Expire Product</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
+            onClick={() => onStartAction("view-product")}
+          >
+            <Eye className="h-4 w-4 text-[#2B6CF3]" />
+            <span className="text-sm">View Product</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* EMPTY SPACE - 30% HEIGHT */}
+      <div className="h-[10vh]"></div>
     </aside>
   );
 }
@@ -318,16 +382,16 @@ function ChatHistorySidebar({
 // ---- Helper to map zuora_api_payloads → individual step payloads ----
 const mapZuoraApiPayloadsToSteps = (apiResponse: {
   zuora_api_payloads?: ZuoraPayloadItem[];
-}) => {
-  
-  
-};
+}) => {};
 
 export default function WorkflowPage() {
   const [isConnected, setIsConnected] = useState(false);
   const [showConnectedCard, setShowConnectedCard] = useState(false);
   const [zuoraSteps, setZuoraSteps] = useState<ZuoraStep[]>([]);
-
+  // Stores the array [{ zuora_api_type, payload }]
+  const [persistedZuoraPayloads, setPersistedZuoraPayloads] = useState<
+    ZuoraPayloadItem[]
+  >([]);
   const [environment, setEnvironment] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -377,7 +441,6 @@ export default function WorkflowPage() {
     }
   };
 
-
   const [currentRatePlan, setCurrentRatePlan] = useState<RatePlanData>({
     name: "",
     description: "",
@@ -417,11 +480,9 @@ export default function WorkflowPage() {
     chargeIds: string[];
   } | null>(null);
   const router = useRouter();
-  const productConsoleLink =
-  executionResult?.productId
+  const productConsoleLink = executionResult?.productId
     ? getZuoraProductUrl(environment, executionResult.productId)
     : null;
-
 
   function getZuoraProductUrl(env: string, productId?: string | null) {
     if (!productId) return null;
@@ -437,7 +498,6 @@ export default function WorkflowPage() {
         return null;
     }
   }
-
 
   const handleHomeClick = () => {
     const confirmLeave = window.confirm(
@@ -461,7 +521,10 @@ export default function WorkflowPage() {
     },
   ]);
   const [chatInput, setChatInput] = useState("");
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<{
+    message: string;
+    type: "success" | "error";
+  } | null>(null);
 
   // ---- Multi-step preview state ----
   const [showPayload, setShowPayload] = useState(false);
@@ -827,167 +890,169 @@ export default function WorkflowPage() {
   // [CHAT-API] Send user message to backend and append assistant reply
 
   // [CHAT-API] Send user message to backend and append assistant reply
-const sendChatToApi = async (message: string) => {
-  try {
-    setIsTyping(true);
-
-    const safeConvId =
-      sanitizeConvId(conversationId) ??
-      getOrCreateConversationId(CHAT_PERSONA);
-
-    const res = await fetch(CHAT_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        persona: CHAT_PERSONA,
-        message,
-        conversation_id: safeConvId,
-      }),
-    });
-
-    const raw = await res.text();
-    let data: any = {};
+  const sendChatToApi = async (message: string) => {
     try {
-      data = raw ? JSON.parse(raw) : {};
-    } catch {
-      // leave data as {}
-    }
+      setIsTyping(true);
 
-    // --------- Main reply text ---------
-    const reply: string =
-      data?.answer ??
-      data?.reply ??
-      data?.message ??
-      data?.assistant ??
-      data?.content ??
-      (res.ok
-        ? "(No reply content)"
-        : `Error: ${res.status} ${res.statusText}`);
+      const safeConvId =
+        sanitizeConvId(conversationId) ??
+        getOrCreateConversationId(CHAT_PERSONA);
 
-    // --------- Conversation id round-trip ---------
-    const returnedConvId =
-      data?.conversation_id || data?.conversationId || data?.conv_id;
-
-    if (returnedConvId && returnedConvId !== conversationId) {
-      setConversationId(returnedConvId);
-
-      if (typeof window !== "undefined") {
-        const key = storageKeyForPersona(CHAT_PERSONA);
-        sessionStorage.setItem(key, returnedConvId);
-      }
-
-      setActiveConversationId(returnedConvId);
-    }
-
-    // --------- Compact citation suffix (optional) ---------
-    let citationsSuffix = "";
-    if (Array.isArray(data?.citations) && data.citations.length > 0) {
-      const firstThree = data.citations.slice(0, 3);
-      const labels = firstThree.map((c: any) => c?.title || c?.id).join(", ");
-      const more =
-        data.citations.length > 3
-          ? ` +${data.citations.length - 3} more`
-          : "";
-      citationsSuffix = `\n\n— sources: ${labels}${more}`;
-    }
-
-    // ======================================================
-    //  DYNAMIC ZUORA PAYLOAD STEPS (NO HARDCODED 3 STEPS)
-    // ======================================================
-    if (
-      Array.isArray(data?.zuora_api_payloads) &&
-      data.zuora_api_payloads.length > 0
-    ) {
-      const items = data.zuora_api_payloads as ZuoraPayloadItem[];
-
-      const makeTitle = (t: string, i: number) => {
-        switch (t) {
-          case "product":
-            return `Step ${i} — Create Product`;
-          case "rateplan":
-            return `Step ${i} — Create Rate Plan`;
-          case "rateplancharge":
-            return `Step ${i} — Create Rate Plan Charge`;
-          default:
-            return `Step ${i} — ${t || "Zuora Call"}`;
-        }
-      };
-
-      const makeDescription = (t: string) => {
-        switch (t) {
-          case "product":
-            return "Zuora call to create the Product object.";
-          case "rateplan":
-            return "Zuora call to create a Product Rate Plan for the product.";
-          case "rateplancharge":
-            return "Zuora call to create a Rate Plan Charge under the rate plan.";
-          default:
-            return "";
-        }
-      };
-
-      const newSteps: ZuoraStep[] = items.map((item, index) => ({
-        id: `${Date.now()}-${index}`,
-        type: item.zuora_api_type || "step",
-        title: makeTitle(item.zuora_api_type || "step", index + 1),
-        description: makeDescription(item.zuora_api_type || "step"),
-        json: JSON.stringify(item.payload ?? {}, null, 2),
-        error: null,
-        expanded: true,
-      }));
-
-      // Store for the dynamic preview cards
-      setZuoraSteps(newSteps);
-      setShowPayload(true);
-
-      // Optional: keep first product / rateplan / charge in legacy preparedPayloads
-      const firstProduct =
-        items.find((x) => x.zuora_api_type === "product")?.payload ?? null;
-      const firstRatePlan =
-        items.find((x) => x.zuora_api_type === "rateplan")?.payload ?? null;
-      const firstCharge =
-        items.find((x) => x.zuora_api_type === "rateplancharge")?.payload ??
-        null;
-
-      setPreparedPayloads({
-        step1: firstProduct,
-        step2: firstRatePlan,
-        step3: firstCharge,
+      const res = await fetch(CHAT_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          persona: CHAT_PERSONA,
+          message,
+          conversation_id: safeConvId,
+          zuora_api_payloads: persistedZuoraPayloads,
+        }),
       });
 
-      addAssistantMessage(
-        `I generated ${newSteps.length} Zuora API payload step${
-          newSteps.length > 1 ? "s" : ""
-        }. You can review and edit them in the workspace preview.`,
-        200
-      );
+      const raw = await res.text();
+      let data: any = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        // leave data as {}
+      }
+
+      // --------- Main reply text ---------
+      const reply: string =
+        data?.answer ??
+        data?.reply ??
+        data?.message ??
+        data?.assistant ??
+        data?.content ??
+        (res.ok
+          ? "(No reply content)"
+          : `Error: ${res.status} ${res.statusText}`);
+
+      // --------- Conversation id round-trip ---------
+      const returnedConvId =
+        data?.conversation_id || data?.conversationId || data?.conv_id;
+
+      if (returnedConvId && returnedConvId !== conversationId) {
+        setConversationId(returnedConvId);
+
+        if (typeof window !== "undefined") {
+          const key = storageKeyForPersona(CHAT_PERSONA);
+          sessionStorage.setItem(key, returnedConvId);
+        }
+
+        setActiveConversationId(returnedConvId);
+      }
+
+      // --------- Compact citation suffix (optional) ---------
+      let citationsSuffix = "";
+      if (Array.isArray(data?.citations) && data.citations.length > 0) {
+        const firstThree = data.citations.slice(0, 3);
+        const labels = firstThree.map((c: any) => c?.title || c?.id).join(", ");
+        const more =
+          data.citations.length > 3
+            ? ` +${data.citations.length - 3} more`
+            : "";
+        citationsSuffix = `\n\n— sources: ${labels}${more}`;
+      }
+
+      // ======================================================
+      //  DYNAMIC ZUORA PAYLOAD STEPS (NO HARDCODED 3 STEPS)
+      // ======================================================
+      if (
+        Array.isArray(data?.zuora_api_payloads) &&
+        data.zuora_api_payloads.length > 0
+      ) {
+        setPersistedZuoraPayloads(data.zuora_api_payloads);
+
+        const items = data.zuora_api_payloads as ZuoraPayloadItem[];
+
+        const makeTitle = (t: string, i: number) => {
+          switch (t) {
+            case "product":
+              return `Step ${i} — Create Product`;
+            case "rateplan":
+              return `Step ${i} — Create Rate Plan`;
+            case "rateplancharge":
+              return `Step ${i} — Create Rate Plan Charge`;
+            default:
+              return `Step ${i} — ${t || "Zuora Call"}`;
+          }
+        };
+
+        const makeDescription = (t: string) => {
+          switch (t) {
+            case "product":
+              return "Zuora call to create the Product object.";
+            case "rateplan":
+              return "Zuora call to create a Product Rate Plan for the product.";
+            case "rateplancharge":
+              return "Zuora call to create a Rate Plan Charge under the rate plan.";
+            default:
+              return "";
+          }
+        };
+
+        const newSteps: ZuoraStep[] = items.map((item, index) => ({
+          id: `${Date.now()}-${index}`,
+          type: item.zuora_api_type || "step",
+          title: makeTitle(item.zuora_api_type || "step", index + 1),
+          description: makeDescription(item.zuora_api_type || "step"),
+          json: JSON.stringify(item.payload ?? {}, null, 2),
+          error: null,
+          expanded: true,
+        }));
+
+        // Store for the dynamic preview cards
+        setZuoraSteps(newSteps);
+        setShowPayload(true);
+
+        // Optional: keep first product / rateplan / charge in legacy preparedPayloads
+        const firstProduct =
+          items.find((x) => x.zuora_api_type === "product")?.payload ?? null;
+        const firstRatePlan =
+          items.find((x) => x.zuora_api_type === "rateplan")?.payload ?? null;
+        const firstCharge =
+          items.find((x) => x.zuora_api_type === "rateplancharge")?.payload ??
+          null;
+
+        setPreparedPayloads({
+          step1: firstProduct,
+          step2: firstRatePlan,
+          step3: firstCharge,
+        });
+
+        addAssistantMessage(
+          `I generated ${newSteps.length} Zuora API payload step${
+            newSteps.length > 1 ? "s" : ""
+          }. You can review and edit them in the workspace preview.`,
+          200
+        );
+      }
+
+      // --------- Append assistant reply to chat ---------
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: String(reply) + citationsSuffix,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (e) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            "Sorry, I couldn't reach the chat service. Please try again in a moment.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+      requestAnimationFrame(() => scrollToBottom(true));
     }
-
-    // --------- Append assistant reply to chat ---------
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        content: String(reply) + citationsSuffix,
-        timestamp: new Date(),
-      },
-    ]);
-  } catch (e) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        content:
-          "Sorry, I couldn't reach the chat service. Please try again in a moment.",
-        timestamp: new Date(),
-      },
-    ]);
-  } finally {
-    setIsTyping(false);
-    requestAnimationFrame(() => scrollToBottom(true));
-  }
-};
-
+  };
 
   const ZUORA_ENV_BASE: Record<string, string> = {
     "api-sandbox": "https://rest.test.zuora.com",
@@ -1045,7 +1110,11 @@ const sendChatToApi = async (message: string) => {
           `${res.status} ${res.statusText}`;
         setIsConnected(false);
         setTokenInfo(null);
-        setToastMessage(`Connection failed: ${reason}`);
+        setToastMessage({
+          message: `Connection failed: ${reason}`,
+          type: "error",
+        });
+
         addAssistantMessage(
           "I couldn't connect. Please check your credentials and environment.",
           200
@@ -1061,7 +1130,11 @@ const sendChatToApi = async (message: string) => {
         baseUrl,
         scope: data.scope ?? null,
       });
-      setToastMessage("Successfully connected to Zuora!");
+      setToastMessage({
+        message: "Successfully connected to Zuora!",
+        type: "success",
+      });
+
       addAssistantMessage(
         "Great! You're now connected. What would you like to do first — Create, Update, Expire, or View a product?",
         600
@@ -1069,7 +1142,10 @@ const sendChatToApi = async (message: string) => {
     } catch (e: any) {
       setIsConnected(false);
       setTokenInfo(null);
-      setToastMessage(`Connection error: ${e?.message ?? "Unexpected error"}`);
+      setToastMessage({
+        message: e.message || "Unexpected error occurred",
+        type: "error",
+      });
     } finally {
       setConnecting(false);
     }
@@ -1552,7 +1628,11 @@ const sendChatToApi = async (message: string) => {
         setExpireProductStep("execute");
         setTimeout(() => {
           addAssistantMessage("✅ Product expired successfully.", 600);
-          setToastMessage("Product expired successfully");
+          setToastMessage({
+            message: "Product expired successfully",
+            type: "success",
+          });
+
           setTimeout(() => {
             completeCurrentFlow();
           }, 1500);
@@ -1747,7 +1827,10 @@ const sendChatToApi = async (message: string) => {
       addAssistantMessage(
         "Product payloads drafted from your current selections. Review each step before execution."
       );
-      setToastMessage("Product draft created successfully");
+      setToastMessage({
+        message: "Product draft created successfully",
+        type: "success",
+      });
     }, 300);
   };
 
@@ -1781,20 +1864,24 @@ const sendChatToApi = async (message: string) => {
 
   const handleExecute = async () => {
     if (!clientId || !clientSecret) {
-      setToastMessage("Client ID/Secret required to create product");
+      setToastMessage({
+        message: "Client ID/Secret required to create product",
+        type: "error",
+      });
+
       addAssistantMessage("Please enter Client ID and Client Secret.");
       return;
     }
-  
+
     setCreateProductStep("execute");
     setExecuting(true);
     addAssistantMessage("Creating product in Zuora…");
-  
+
     try {
       let productPayload: any = null;
       let ratePlanPayload: any = null;
       let ratePlanChargePayload: any = null;
-  
+
       // ───────────────────────────────────────────────
       // 1) DYNAMIC MODE – use zuoraSteps (zuora_api_payloads)
       // ───────────────────────────────────────────────
@@ -1802,14 +1889,14 @@ const sendChatToApi = async (message: string) => {
         const updatedSteps = zuoraSteps.map((s) => ({ ...s }));
         const parsedSteps: { type: string; payload: any }[] = [];
         let hasError = false;
-  
+
         updatedSteps.forEach((step) => {
           if (!step.json || !step.json.trim()) {
             step.error = "Payload is empty. Please provide valid JSON.";
             hasError = true;
             return;
           }
-  
+
           try {
             const parsed = JSON.parse(step.json);
             step.error = null;
@@ -1819,15 +1906,15 @@ const sendChatToApi = async (message: string) => {
             hasError = true;
           }
         });
-  
+
         setZuoraSteps(updatedSteps);
-  
+
         if (hasError) {
           throw new Error(
             "One or more steps contain invalid JSON. Please fix them and try again."
           );
         }
-  
+
         // Map by type → product / rateplan / rateplancharge
         productPayload =
           parsedSteps.find((s) => s.type === "product")?.payload || null;
@@ -1835,7 +1922,7 @@ const sendChatToApi = async (message: string) => {
           parsedSteps.find((s) => s.type === "rateplan")?.payload || null;
         ratePlanChargePayload =
           parsedSteps.find((s) => s.type === "rateplancharge")?.payload || null;
-  
+
         // Keep for debugging / future reuse
         setPreparedPayloads({
           step1: productPayload,
@@ -1849,7 +1936,7 @@ const sendChatToApi = async (message: string) => {
         let step1Obj: any = null;
         let step2Obj: any = null;
         let step3Obj: any = null;
-  
+
         // Step 1: Product
         try {
           step1Obj = JSON.parse(step1ProductJson || "{}");
@@ -1858,7 +1945,7 @@ const sendChatToApi = async (message: string) => {
           setStep1Error(e.message);
           throw new Error(`Step 1 JSON invalid: ${e.message}`);
         }
-  
+
         // Step 2: Rate Plan
         try {
           step2Obj = JSON.parse(step2RatePlanJson || "{}");
@@ -1867,7 +1954,7 @@ const sendChatToApi = async (message: string) => {
           setStep2Error(e.message);
           throw new Error(`Step 2 JSON invalid: ${e.message}`);
         }
-  
+
         // Step 3: Charge (optional)
         if (step3ChargeJson.trim()) {
           try {
@@ -1880,21 +1967,19 @@ const sendChatToApi = async (message: string) => {
         } else {
           step3Obj = null;
         }
-  
+
         productPayload = step1Obj;
         ratePlanPayload = step2Obj;
         ratePlanChargePayload = step3Obj;
-  
+
         setPreparedPayloads({
           step1: step1Obj,
           step2: step2Obj,
           step3: step3Obj,
         });
       }
-  
-      // ───────────────────────────────────────────────
+
       // 3) FINAL PAYLOAD → Lambda
-      // ───────────────────────────────────────────────
       const payload = {
         clientId,
         clientSecret,
@@ -1904,10 +1989,10 @@ const sendChatToApi = async (message: string) => {
           ratePlanCharge: ratePlanChargePayload,
         },
       };
-  
+
       console.log("🔥 FINAL PAYLOAD SENT TO ZUORA LAMBDA:");
       console.log(JSON.stringify(payload, null, 2));
-  
+
       const res = await fetch(
         "https://7ajwemkf19.execute-api.us-east-2.amazonaws.com/demo/zuora/product",
         {
@@ -1916,28 +2001,43 @@ const sendChatToApi = async (message: string) => {
           body: JSON.stringify(payload),
         }
       );
-  
+
       const raw = await res.text();
       let data: any = {};
       try {
         data = JSON.parse(raw);
       } catch {
-        // ignore, keep raw for debugging
+        /* ignore */
       }
-  
-      if (!res.ok) {
-        throw new Error(data?.error || data?.message || `${res.status}`);
+
+      // =====================================
+      // ✅ SUCCESS → STATUS 200 OR 201
+      // =====================================
+      if (res.status === 200 || res.status === 201) {
+        setToastMessage({
+          message: data.message || "Operation completed successfully!",
+          type: "success",
+        });
+      } else {
+        // =====================================
+        // ❌ FAILURE → ANY OTHER STATUS
+        // =====================================
+        setToastMessage({
+          message: data?.error || data?.message || "Operation failed!",
+          type: "error",
+        });
+
+        throw new Error(
+          data?.error || data?.message || `Failed with status ${res.status}`
+        );
       }
-  
-      // ───────────────────────────────────────────────
-      // 4) Map API response → IDs for UI
-      //    supports:
-      //    { productId, ratePlanId, ratePlanChargeId }
-      //    or arrays { ratePlans:[], charges:[] }
-      // ───────────────────────────────────────────────
+
+      // =====================================
+      // 🔄 Continue mapping IDs after status check
+      // =====================================
       const productId: string | undefined =
         data.productId || data.Id || data.id;
-  
+
       const ratePlanIds: string[] = [];
       if (Array.isArray(data.ratePlans)) {
         ratePlanIds.push(
@@ -1946,10 +2046,8 @@ const sendChatToApi = async (message: string) => {
             .filter(Boolean)
         );
       }
-      if (data.ratePlanId) {
-        ratePlanIds.push(data.ratePlanId);
-      }
-  
+      if (data.ratePlanId) ratePlanIds.push(data.ratePlanId);
+
       const chargeIds: string[] = [];
       if (Array.isArray(data.charges)) {
         chargeIds.push(
@@ -1958,48 +2056,31 @@ const sendChatToApi = async (message: string) => {
             .filter(Boolean)
         );
       }
-      if (data.ratePlanChargeId) {
-        chargeIds.push(data.ratePlanChargeId);
-      }
-  
+      if (data.ratePlanChargeId) chargeIds.push(data.ratePlanChargeId);
+
+      // Save results
       setExecutionResult({
         productId: productId ?? "",
         ratePlanIds,
         chargeIds,
       });
-  
+
+      // Build assistant success message
       let msg =
         data.message ||
         "✅ Product + RatePlans + Charges created successfully!";
-  
-      if (productId) {
-        msg += `\n\nProduct Id: ${productId}`;
-      }
-      if (ratePlanIds.length) {
+
+      if (productId) msg += `\n\nProduct Id: ${productId}`;
+      if (ratePlanIds.length)
         msg += `\nRatePlan Ids:\n- ${ratePlanIds.join("\n- ")}`;
-      }
-      if (chargeIds.length) {
-        msg += `\nCharge Ids:\n- ${chargeIds.join("\n- ")}`;
-      }
-  
-      // hide preview after successful creation
-      setShowPayload(false);
-  
-      addAssistantMessage(msg);
-      setToastMessage(data.message || "Product created successfully!");
-    } catch (err: any) {
-      console.error("Create product error:", err);
-      addAssistantMessage(
-        `❌ Product creation failed.\n\nReason: ${
-          err?.message || "Unknown error"
-        }`
-      );
-      setToastMessage(err?.message ?? "Product creation failed");
+      if (chargeIds.length) msg += `\nCharge Ids:\n- ${chargeIds.join("\n- ")}`;
+
+      addAssistantMessage(msg,200);
+
     } finally {
       setExecuting(false);
     }
   };
-  
 
   const generateProductPayload = () => {
     const payload = {
@@ -2216,9 +2297,9 @@ const sendChatToApi = async (message: string) => {
           activeConversationId={activeConversationId}
           onNewConversation={handleNewConversation}
           onSelectConversation={handleSelectConversation}
-          onDeleteConversation={handleDeleteConversation}   // ⬅️ new
+          onDeleteConversation={handleDeleteConversation}
+          onStartAction={startActionWithChat}
         />
-
 
         {/* Left Panel - Chat Assistant */}
         <div
@@ -2249,10 +2330,9 @@ const sendChatToApi = async (message: string) => {
                   ]);
                   setCurrentFlow("idle");
                   setCompletedFlows([]);
-                  setShowPayload(false);          // 👈 hide preview panel
-                  setZuoraSteps([]);              // 👈 clear dynamic steps
-                  setExecutionResult(null);       // 👈 hides product link button as well
-
+                  setShowPayload(false); // 👈 hide preview panel
+                  setZuoraSteps([]); // 👈 clear dynamic steps
+                  setExecutionResult(null); // 👈 hides product link button as well
                 }}
               >
                 <RotateCcw className="h-4 w-4" />
@@ -2308,40 +2388,85 @@ const sendChatToApi = async (message: string) => {
                 </Card>
               ))}
 
-              {chatMessages.map((message, index) => (
-                <div key={index}>
-                  {index > 0 && <div className="my-4 h-px bg-gray-100" />}
-                  <div className="flex gap-3">
-                    {message.role === "assistant" && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100">
-                        <Sparkles className="h-4 w-4 text-[#2B6CF3]" />
-                      </div>
-                    )}
-                    <div className="flex-1">
+              <div className="flex flex-col flex-1 overflow-y-auto space-y-4 px-4 py-6">
+                {chatMessages.map((message, index) => {
+                  const isUser = message.role === "user";
+
+                  return (
+                    <div
+                      key={index}
+                      className={`flex w-full ${
+                        isUser ? "justify-end" : "justify-start"
+                      }`}
+                    >
                       <div
-                        className={`rounded-lg p-4 ${
-                          message.role === "assistant"
-                            ? "rounded-tl-none bg-gray-100"
-                            : "ml-auto max-w-[80%] rounded-tr-none bg-[#2B6CF3] text-white"
+                        className={`max-w-[80%] p-3 rounded-lg shadow-sm border ${
+                          isUser
+                            ? "bg-blue-600 text-white border-blue-700"
+                            : "bg-gray-50 text-gray-800 border-gray-200 dark:bg-gray-800 dark:border-gray-700"
                         }`}
                       >
-                        <p className="whitespace-pre-line text-sm">
-                          {message.content}
-                        </p>
+                        {/* USER MESSAGE */}
+                        {isUser && (
+                          <div className="whitespace-pre-wrap text-sm">
+                            {message.content}
+                          </div>
+                        )}
+
+                        {/* ASSISTANT MESSAGE (HTML) */}
+                        {!isUser && (
+                          <div
+                            className="prose prose-sm max-w-full dark:prose-invert break-all"
+                            dangerouslySetInnerHTML={{
+                              __html: message.content,
+                            }}
+                          />
+                        )}
+
+                        {/* TIMESTAMP */}
+                        <div className="text-xs text-gray-500 mt-2 text-right">
+                          {new Date(message.timestamp).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </div>
+
+                        {/* COPY BUTTON */}
+                        <button
+                          className="mt-2 text-xs text-blue-600 hover:underline flex items-center gap-1"
+                          onClick={() => {
+                            navigator.clipboard.writeText(
+                              typeof message.content === "string"
+                                ? message.content.replace(/<[^>]*>?/gm, "")
+                                : ""
+                            );
+                            setToastMessage({
+                              message: `Copied message`,
+                              type: "success",
+                            });
+                          }}
+                        >
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 6h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                            />
+                          </svg>
+                          Copy
+                        </button>
                       </div>
-                      <p className="mt-1 text-xs text-[#9CA3AF]">
-                        {message.timestamp.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </p>
                     </div>
-                    {message.role === "user" && (
-                      <div className="h-8 w-8 shrink-0" />
-                    )}
-                  </div>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
+
               {productConsoleLink && (
                 <div className="mt-2 flex">
                   <Button
@@ -2360,8 +2485,6 @@ const sendChatToApi = async (message: string) => {
                   </Button>
                 </div>
               )}
-
-
 
               {isTyping && <TypingIndicator />}
 
@@ -2713,52 +2836,9 @@ const sendChatToApi = async (message: string) => {
                   </Card>
                 )}
 
-              {currentFlow === "idle" && !showPayload && (
-                <div className="mt-6">
-                  <p className="mb-3 text-sm font-medium text-gray-700">
-                    Suggested Actions
-                  </p>
-                  <div className="space-y-2">
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => startActionWithChat("create-product")}
-                    >
-                      <Package className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">Create Product</span>
-                    </Button>
+              {currentFlow === "idle" && !showPayload && <div> </div>}
 
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => startActionWithChat("update-product")}
-                    >
-                      <Edit className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">Update Product</span>
-                    </Button>
-
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => startActionWithChat("expire-product")}
-                    >
-                      <Clock className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">Expire Product</span>
-                    </Button>
-
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 border-gray-200 bg-white hover:border-[#2B6CF3] hover:bg-blue-50"
-                      onClick={() => startActionWithChat("view-product")}
-                    >
-                      <Eye className="h-4 w-4 text-[#2B6CF3]" />
-                      <span className="text-sm">View Product</span>
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {showNewMessagesPill && (
+              {/* {showNewMessagesPill && (
                 <button
                   onClick={() => scrollToBottom(true)}
                   className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-full bg-[#2B6CF3] px-4 py-2 text-sm font-medium text-white shadow-lg"
@@ -2766,7 +2846,7 @@ const sendChatToApi = async (message: string) => {
                   <span>New messages</span>
                   <ChevronDown className="h-4 w-4" />
                 </button>
-              )}
+              )} */}
             </div>
           </div>
 
@@ -2945,105 +3025,117 @@ const sendChatToApi = async (message: string) => {
             <div className="space-y-6">
               {/* 3-step preview (Product, Rate Plan, Charge) */}
               {showPayload && zuoraSteps.length > 0 && (
-  <div className="space-y-6">
-    {zuoraSteps.map((step, index) => (
-      <Card key={step.id}>
-        <CardHeader
-          onClick={() =>
-            setZuoraSteps((prev) =>
-              prev.map((s) =>
-                s.id === step.id ? { ...s, expanded: !s.expanded } : s
-              )
-            )
-          }
-          className="cursor-pointer"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>
-                {step.title || `Step ${index + 1}`}
-              </CardTitle>
-              <CardDescription>
-                {step.description}
-              </CardDescription>
-            </div>
-            <ChevronDown
-              className={`h-4 w-4 transition-transform ${
-                step.expanded ? "rotate-180" : ""
-              }`}
-            />
-          </div>
-        </CardHeader>
+                <div className="space-y-6">
+                  {zuoraSteps.map((step, index) => (
+                    <Card key={step.id}>
+                      <CardHeader
+                        onClick={() =>
+                          setZuoraSteps((prev) =>
+                            prev.map((s) =>
+                              s.id === step.id
+                                ? { ...s, expanded: !s.expanded }
+                                : s
+                            )
+                          )
+                        }
+                        className="cursor-pointer"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <CardTitle>
+                              {step.title || `Step ${index + 1}`}
+                            </CardTitle>
+                            <CardDescription>
+                              {step.description}
+                            </CardDescription>
+                          </div>
+                          <ChevronDown
+                            className={`h-4 w-4 transition-transform ${
+                              step.expanded ? "rotate-180" : ""
+                            }`}
+                          />
+                        </div>
+                      </CardHeader>
 
-        {step.expanded && (
-          <CardContent>
-            {(step.error || step.jsonError) && (
-              <div className="mb-3 rounded-lg border border-red-400 bg-red-50 p-3 text-xs text-red-700">
-                {step.error || step.jsonError}
-              </div>
-            )}
+                      {step.expanded && (
+                        <CardContent>
+                          {(step.error || step.jsonError) && (
+                            <div className="mb-3 rounded-lg border border-red-400 bg-red-50 p-3 text-xs text-red-700">
+                              {step.error || step.jsonError}
+                            </div>
+                          )}
 
-            <textarea
-              className="h-56 w-full rounded-lg border bg-slate-900 p-4 font-mono text-xs text-green-400"
-              value={step.json}
-              onChange={(e) => {
-                const val = e.target.value;
-                setZuoraSteps((prev) =>
-                  prev.map((s) => {
-                    if (s.id !== step.id) return s;
-                    let jsonError: string | null = null;
-                    try {
-                      if (val.trim()) JSON.parse(val);
-                    } catch (err: any) {
-                      jsonError = err.message;
-                    }
-                    return { ...s, json: val, jsonError };
-                  })
-                );
-              }}
-            />
+                          <textarea
+                            className="h-56 w-full rounded-lg border bg-slate-900 p-4 font-mono text-xs text-green-400"
+                            value={step.json}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setZuoraSteps((prev) =>
+                                prev.map((s) => {
+                                  if (s.id !== step.id) return s;
+                                  let jsonError: string | null = null;
+                                  try {
+                                    if (val.trim()) JSON.parse(val);
+                                  } catch (err: any) {
+                                    jsonError = err.message;
+                                  }
+                                  return { ...s, json: val, jsonError };
+                                })
+                              );
+                            }}
+                          />
 
-            <div className="mt-3 flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={async () => {
-                  try {
-                    setCopying(true);
-                    await navigator.clipboard.writeText(step.json);
-                    setToastMessage(
-                      `Copied ${step.title || `step ${index + 1}`} payload`
-                    );
-                  } catch {
-                    setToastMessage(
-                      "Copy failed. Select and copy manually."
-                    );
-                  } finally {
-                    setCopying(false);
-                  }
-                }}
-              >
-                Copy Step {index + 1}
-              </Button>
-            </div>
-          </CardContent>
-        )}
-      </Card>
-    ))}
+                          <div className="mt-3 flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={async () => {
+                                try {
+                                  setCopying(true);
+                                  await navigator.clipboard.writeText(
+                                    step.json
+                                  );
+                                  setToastMessage({
+                                    message: `Copied ${
+                                      step.title || `step ${index + 1}`
+                                    } payload`,
+                                    type: "success",
+                                  });
+                                } catch {
+                                  setToastMessage({
+                                    message:
+                                      "Copy failed. Select and copy manually.",
+                                    type: "error",
+                                  });
+                                } finally {
+                                  setCopying(false);
+                                }
+                              }}
+                            >
+                              Copy Step {index + 1}
+                            </Button>
+                          </div>
+                        </CardContent>
+                      )}
+                    </Card>
+                  ))}
 
-    <div className="flex flex-col gap-3 pt-2">
-      <Button
-        className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-60"
-        onClick={handleExecute}
-        disabled={executing || zuoraSteps.some((s) => s.jsonError)}
-      >
-        <CheckCircle2 className="mr-2 h-4 w-4" />
-        {executing ? "Creating in Zuora…" : "Submit"}
-      </Button>
-    </div>
-  </div>
-)}
-
+                  <div className="flex flex-col gap-3 pt-2">
+                    <Button
+                      className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-60"
+                      onClick={handleExecute}
+                      disabled={
+                        executing || zuoraSteps.some((s) => s.jsonError)
+                      }
+                    >
+                      <CheckCircle2 className="mr-2 h-4 w-4" />
+                      {executing
+                        ? "Creating in Zuora…"
+                        : "Create product, product rate plan, rate plan charge"}
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {isConnected &&
                 showConnectedCard &&
@@ -3074,9 +3166,12 @@ const sendChatToApi = async (message: string) => {
           )}
         </div>
       </div>
-
       {toastMessage && (
-        <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
+        <Toast
+          message={toastMessage.message}
+          type={toastMessage.type}
+          onClose={() => setToastMessage(null)}
+        />
       )}
     </div>
   );
