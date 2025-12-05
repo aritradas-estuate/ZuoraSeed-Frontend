@@ -119,10 +119,11 @@ interface ZuoraStep {
   type: string; // e.g. "product", "rateplan", "rateplancharge"
   title: string; // UI title (derived from type)
   description: string; // UI description
-  json: string; // JSON string of payload
+  json: string; // JSON string shown in the textarea (sanitized)
   error?: string | null; // backend/LLM error, if any
   jsonError?: string | null; // local JSON parse error when editing
   expanded: boolean; // for collapsible cards
+  hiddenFields?: Record<string, any>; // 🔴 dynamic refs like ProductId, etc.
 }
 
 interface RatePlanData {
@@ -133,6 +134,7 @@ interface RatePlanData {
 type ZuoraPayloadItem = {
   zuora_api_type: string;
   payload: any;
+  payload_id?: string; // ✅ add this
 };
 
 interface ProductData {
@@ -329,7 +331,7 @@ function ChatHistorySidebar({
       </div>
 
       {/* SUGGESTED ACTIONS - 30% HEIGHT */}
-      <div className="h-[40vh] mt-4 overflow-y-auto">
+      <div className="h-[30vh] mt-4 overflow-y-auto">
         <p className="mb-3 text-sm font-medium text-gray-700">
           Suggested Actions
         </p>
@@ -412,6 +414,65 @@ export default function WorkflowPage() {
     startDate: "",
     ratePlans: [],
   });
+
+  /**
+   * Reverse normalize internal zuora_api_type to LLM original formats.
+   */
+  const revertZuoraApiType = (t: string): string => {
+    const map: Record<string, string> = {
+      product: "product_create",
+      rateplan: "rate_plan_create",
+      rateplancharge: "charge_create",
+    };
+    return map[t] || t;
+  };
+
+  /**
+   * Take internal payload array and convert back to LLM-style payloads.
+   */
+  const revertZuoraApiPayloads = (items: ZuoraPayloadItem[]) => {
+    if (!Array.isArray(items)) return [];
+
+    return items.map((i) => ({
+      zuora_api_type: revertZuoraApiType(i.zuora_api_type),
+      payload: i.payload,
+      payload_id: i.payload_id, // ✅ keep it
+    }));
+  };
+
+  // helper to strip dynamic refs from the preview JSON
+  const sanitizePayloadForDisplay = (payload: any) => {
+    if (!payload || typeof payload !== "object") {
+      return { display: payload, hidden: {} as Record<string, any> };
+    }
+
+    const clone: any = Array.isArray(payload) ? [...payload] : { ...payload };
+    const hidden: Record<string, any> = {};
+
+    const DYNAMIC_KEYS = ["ProductId", "ProductRatePlanId", "RatePlanId"];
+
+    for (const key of Object.keys(clone)) {
+      const val = clone[key];
+      if (
+        typeof val === "string" &&
+        val.startsWith("@{") &&
+        DYNAMIC_KEYS.includes(key)
+      ) {
+        // store raw dynamic value
+        hidden[key] = val;
+        // either remove it or show a nicer hint
+        // Option A: completely hide from JSON
+        delete clone[key];
+
+        // Option B (alternative): show a placeholder instead
+        // clone[key] = "<auto-linked from previous step>";
+      } else if (val && typeof val === "object") {
+        // optional: recurse into nested objects if needed
+      }
+    }
+
+    return { display: clone, hidden };
+  };
 
   const handleDeleteConversation = (id: string) => {
     if (typeof window !== "undefined") {
@@ -906,7 +967,11 @@ export default function WorkflowPage() {
           persona: CHAT_PERSONA,
           message,
           conversation_id: safeConvId,
-          zuora_api_payloads: conversationPayloads[safeConvId] || [], // ⬅️ Scopes payload per conversation
+          // ✅ send back whatever is stored for this conversation,
+          // converted only for classic product/rateplan/charge flows
+          zuora_api_payloads: revertZuoraApiPayloads(
+            conversationPayloads[safeConvId] || []
+          ),
         }),
       });
 
@@ -915,7 +980,7 @@ export default function WorkflowPage() {
       try {
         data = raw ? JSON.parse(raw) : {};
       } catch {
-        // ignore
+        // ignore parse errors from backend
       }
 
       // --------------------------
@@ -971,7 +1036,17 @@ export default function WorkflowPage() {
       ) {
         const items = data.zuora_api_payloads as ZuoraPayloadItem[];
 
-        // Normalize types from LLM
+        // ✅ detect REST-style payloads: payload has method + endpoint
+        const hasDirectRestPayloads = items.some(
+          (item) =>
+            item &&
+            item.payload &&
+            typeof item.payload === "object" &&
+            "method" in item.payload &&
+            "endpoint" in item.payload
+        );
+
+        // Normalization only for classic create flows
         const normalizeType = (t: string) => {
           if (!t) return "step";
           const map: Record<string, string> = {
@@ -988,17 +1063,17 @@ export default function WorkflowPage() {
           return map[t] || t;
         };
 
-        // TITLE / DESC
         const makeTitle = (t: string, i: number) => {
           switch (t) {
             case "product":
-              return `Step ${i} — Create Product`;
+              return ` Create Product`;
             case "rateplan":
-              return `Step ${i} — Create Rate Plan`;
+              return `Create Rate Plan`;
             case "rateplancharge":
-              return `Step ${i} — Create Rate Plan Charge`;
+              return `Create Rate Plan Charge`;
             default:
-              return `Step ${i} — ${t}`;
+              // For things like "product_update", "expire_product", etc.
+              return `${t}`;
           }
         };
 
@@ -1016,42 +1091,53 @@ export default function WorkflowPage() {
         };
 
         // -----------------------------
-        // BUILD STEPS (for UI editor)
+        // BUILD STEPS (for workspace UI)
         // -----------------------------
         const newSteps: ZuoraStep[] = items.map((item, index) => {
-          const normalizedType = normalizeType(item.zuora_api_type);
+          const normalizedType = hasDirectRestPayloads
+            ? item.zuora_api_type
+            : normalizeType(item.zuora_api_type);
+
+          const { display, hidden } = sanitizePayloadForDisplay(
+            item.payload ?? {}
+          );
 
           return {
             id: `${Date.now()}-${index}`,
             type: normalizedType,
-            title: makeTitle(normalizedType, index + 1),
+            title:
+              item.payload.name ||
+              item.payload.Name ||
+              makeTitle(normalizedType, index + 1),
             description: makeDescription(normalizedType),
-            json: JSON.stringify(item.payload ?? {}, null, 2),
+            json: JSON.stringify(display, null, 2), // 👈 sanitized preview
             error: null,
+            jsonError: null,
             expanded: true,
+            hiddenFields: hidden, // 👈 keep dynamic refs here
           };
         });
 
         setZuoraSteps(newSteps);
+
         setShowPayload(true);
+        addAssistantMessage(
+          `The Zuora API payloads are ready. You can review and make any edits in the workspace preview on the right`,
+          150
+        );
 
         // -----------------------------
         // SAVE PAYLOAD PER CONVERSATION
         // -----------------------------
         setConversationPayloads((prev) => ({
           ...prev,
-          [safeConvId]: items.map((item) => ({
-            ...item,
-            zuora_api_type: normalizeType(item.zuora_api_type),
-          })),
+          [safeConvId]: hasDirectRestPayloads
+            ? items // ✅ store EXACT payloads if method+endpoint present
+            : items.map((item) => ({
+                ...item,
+                zuora_api_type: normalizeType(item.zuora_api_type),
+              })),
         }));
-
-        addAssistantMessage(
-          `I generated ${newSteps.length} Zuora API payload step${
-            newSteps.length > 1 ? "s" : ""
-          }. You can review and edit them in the workspace.`,
-          150
-        );
       }
 
       // --------------------------
@@ -1434,119 +1520,7 @@ export default function WorkflowPage() {
     // you can wire your conversational create-product wizard here if needed
   };
 
-  const handleUpdateProductFlow = (input: string) => {
-    if (updateProductStep === "identify") {
-      const mockProduct = {
-        id: "P-000234",
-        name: input,
-        sku: "SOLAR-001",
-        description: "Solar Plan Basic",
-        effectiveStart: "2024-01-01",
-        effectiveEnd: "2026-12-31",
-        currency: "US, Canada",
-      };
-      setSelectedProduct(mockProduct);
-      setUpdateProductStep("show-summary");
-
-      setTimeout(() => {
-        addAssistantMessage(
-          `Found product: ${mockProduct.description}\n\nProduct ID: ${mockProduct.id}\nSKU: ${mockProduct.sku}\nEffective Start: ${mockProduct.effectiveStart}\nEffective End: ${mockProduct.effectiveEnd}\nCurrency: ${mockProduct.currency}\n\nWhat would you like to update?`,
-          600
-        );
-      }, 300);
-    } else if (updateProductStep === "show-summary") {
-      setUpdateProductStep("select-attribute");
-      setTimeout(() => {
-        addAssistantMessage(
-          "Please select what you'd like to update:\n1. Name\n2. SKU\n3. Description\n4. Effective Start Date\n5. Effective End Date\n6. Custom Fields\n7. Product Rate Plans\n\nType the number or name.",
-          300
-        );
-      }, 300);
-    } else if (updateProductStep === "select-attribute") {
-      const attributeMap: Record<string, string> = {
-        "1": "Name",
-        "2": "SKU",
-        "3": "Description",
-        "4": "Effective Start Date",
-        "5": "Effective End Date",
-        "6": "Custom Fields",
-        "7": "Product Rate Plans",
-        name: "Name",
-        sku: "SKU",
-        description: "Description",
-        "start date": "Effective Start Date",
-        "end date": "Effective End Date",
-        "custom fields": "Custom Fields",
-        "rate plans": "Product Rate Plans",
-      };
-
-      const selected = attributeMap[input.toLowerCase()];
-      if (selected) {
-        setSelectedAttribute(selected);
-        setUpdateProductStep("update-value");
-        setTimeout(() => {
-          addAssistantMessage(`What's the new value for ${selected}?`, 300);
-        }, 300);
-      } else {
-        setTimeout(() => {
-          addAssistantMessage(
-            "Please select a valid option (1-7 or type the attribute name).",
-            300
-          );
-        }, 300);
-      }
-    } else if (updateProductStep === "update-value") {
-      setNewAttributeValue(input);
-      setUpdateProductStep("confirm");
-
-      setTimeout(() => {
-        addAssistantMessage(
-          `⚠️ Note: This change will be effective for new subscriptions only.\n\n✅ Product: ${selectedProduct.description}\n🔁 Change: ${selectedAttribute} → ${input}\n\nDo you want me to proceed with this update?`,
-          600
-        );
-      }, 300);
-    } else if (updateProductStep === "confirm") {
-      if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
-        setUpdateProductStep("execute");
-        setTimeout(() => {
-          addAssistantMessage("✅ Update submitted successfully.", 600);
-          setTimeout(() => {
-            addAssistantMessage(
-              "Would you like to update another attribute?",
-              300
-            );
-            setUpdateProductStep("another-attribute");
-          }, 1200);
-        }, 300);
-      } else {
-        setTimeout(() => {
-          addAssistantMessage(
-            "Okay, no changes applied. Would you like to update a different attribute?",
-            300
-          );
-          setUpdateProductStep("another-attribute");
-        }, 300);
-      }
-    } else if (updateProductStep === "another-attribute") {
-      if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
-        setUpdateProductStep("select-attribute");
-        setTimeout(() => {
-          addAssistantMessage(
-            "Please select what you'd like to update:\n1. Name\n2. SKU\n3. Description\n4. Effective Start Date\n5. Effective End Date\n6. Custom Fields\n7. Product Rate Plans",
-            300
-          );
-        }, 300);
-      } else {
-        setTimeout(() => {
-          addAssistantMessage(
-            "Update complete! What would you like to do next?",
-            300
-          );
-          completeCurrentFlow();
-        }, 300);
-      }
-    }
-  };
+  const handleUpdateProductFlow = (input: string) => {};
 
   const handleExpireProductFlow = (input: string) => {
     if (expireProductStep === "identify") {
@@ -1558,15 +1532,6 @@ export default function WorkflowPage() {
         effectiveStart: "2024-01-01",
         effectiveEnd: "2027-12-31",
       };
-      setSelectedProduct(mockProduct);
-      setExpireProductStep("show-details");
-
-      setTimeout(() => {
-        addAssistantMessage(
-          `Found product: ${mockProduct.description}\n\nProduct ID: ${mockProduct.id}\nEffective Start: ${mockProduct.effectiveStart}\nEffective End: ${mockProduct.effectiveEnd}\n\nWould you like to change its End Date to expire it?`,
-          600
-        );
-      }, 300);
     } else if (expireProductStep === "show-details") {
       if (input.toLowerCase() === "yes" || input.toLowerCase() === "y") {
         setExpireProductStep("select-method");
@@ -1904,13 +1869,107 @@ export default function WorkflowPage() {
     addAssistantMessage("Creating product in Zuora…");
 
     try {
+      // ---------------------------------------------------
+      // 0️⃣ DIRECT REST MODE — use zuora_api_payloads as-is
+      // ---------------------------------------------------
+      const safeConvId =
+        sanitizeConvId(conversationId) ??
+        getOrCreateConversationId(CHAT_PERSONA);
+
+      const convPayloads: ZuoraPayloadItem[] =
+        conversationPayloads[safeConvId] || [];
+
+      const hasDirectRestPayloads = convPayloads.some(
+        (item) =>
+          item &&
+          item.payload &&
+          typeof item.payload === "object" &&
+          "method" in item.payload &&
+          "endpoint" in item.payload
+      );
+
+      if (hasDirectRestPayloads) {
+        const payload = {
+          clientId,
+          clientSecret,
+          // ✅ send raw zuora_api_payloads to Lambda
+          zuora_api_payloads: convPayloads,
+        };
+
+        console.log("🔥 EXECUTING DIRECT ZUORA API PAYLOADS →");
+        console.log(JSON.stringify(payload, null, 2));
+
+        const res = await fetch(
+          "https://7ajwemkf19.execute-api.us-east-2.amazonaws.com/demo/zuora/product",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          }
+        );
+
+        const raw = await res.text();
+        let data: any = {};
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          throw new Error("Invalid JSON response from Lambda.");
+        }
+
+        console.log("🔍 LAMBDA RESPONSE (DIRECT MODE):", data);
+
+        const isFailure =
+          data.error ||
+          data.Error ||
+          data.Errors ||
+          data.success === false ||
+          data.Success === false ||
+          res.status >= 400;
+
+        if (isFailure) {
+          const errMsg =
+            data.error ||
+            data.Error ||
+            JSON.stringify(data.Errors) ||
+            "Zuora request failed.";
+
+          setToastMessage({
+            message: errMsg,
+            type: "error",
+          });
+
+          addAssistantMessage(`❌ ${errMsg}`);
+          throw new Error(errMsg);
+        }
+
+        const successMessage =
+          data.message || "Zuora operation completed successfully.";
+
+        setToastMessage({
+          message: successMessage,
+          type: "success",
+        });
+
+        addAssistantMessage(`✅ ${successMessage}`);
+
+        // if Lambda returns IDs, keep this; otherwise harmless
+        setExecutionResult({
+          productId: data.productId,
+          ratePlanIds: data.ratePlanIds || [],
+          chargeIds: data.chargeIds || [],
+        });
+
+        return; // ✅ skip classic create flow
+      }
+
+      // ---------------------------------------------------
+      // 1️⃣ CLASSIC CREATE PRODUCT FLOW (3-step workspace)
+      // ---------------------------------------------------
       let productPayload: any = null;
       let ratePlanPayload: any = null;
       let ratePlanChargePayload: any = null;
 
-      // ===========================================================
-      // 1️⃣ DYNAMIC MODE — USE EDITED PAYLOADS FROM WORKSPACE STEPS
-      // ===========================================================
+      // DYNAMIC MODE — use edited workspace steps
       if (zuoraSteps.length > 0) {
         const updatedSteps = zuoraSteps.map((s) => ({ ...s }));
         const parsedSteps: { type: string; payload: any }[] = [];
@@ -1925,6 +1984,26 @@ export default function WorkflowPage() {
 
           try {
             const parsed = JSON.parse(step.json);
+
+            // 🔴 re-inject dynamic fields that we hid in the UI
+            if (
+              step.hiddenFields &&
+              Object.keys(step.hiddenFields).length > 0
+            ) {
+              for (const [k, v] of Object.entries(step.hiddenFields)) {
+                // only overwrite if user didn't explicitly set something different
+                if (
+                  parsed[k] === undefined ||
+                  parsed[k] === null ||
+                  parsed[k] === "" ||
+                  (typeof parsed[k] === "string" &&
+                    parsed[k].startsWith("<auto-linked"))
+                ) {
+                  parsed[k] = v;
+                }
+              }
+            }
+
             step.error = null;
             parsedSteps.push({ type: step.type, payload: parsed });
           } catch (err: any) {
@@ -1945,16 +2024,14 @@ export default function WorkflowPage() {
           parsedSteps.find((s) => s.type === "product")?.payload || null;
         ratePlanPayload =
           parsedSteps.find((s) => s.type === "rateplan")?.payload || null;
-       
 
-          const chargePayloads = parsedSteps
-  .filter((s) => s.type === "rateplancharge")
-  .map((s) => s.payload);
+        const chargePayloads = parsedSteps
+          .filter((s) => s.type === "rateplancharge")
+          .map((s) => s.payload);
 
-ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
+        ratePlanChargePayload =
+          chargePayloads.length > 0 ? chargePayloads : null;
 
-
-        // Save what user last edited
         setPreparedPayloads({
           step1: productPayload,
           step2: ratePlanPayload,
@@ -1962,15 +2039,12 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
         });
       }
 
-      // ===========================================================
-      // 2️⃣ FALLBACK MODE — OLD TEXTAREA FIELDS
-      // ===========================================================
+      // FALLBACK MODE — old textareas
       else {
         let step1Obj: any = null;
         let step2Obj: any = null;
         let step3Obj: any = null;
 
-        // Step 1: Product
         try {
           step1Obj = JSON.parse(step1ProductJson || "{}");
           setStep1Error(null);
@@ -1979,7 +2053,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
           throw new Error(`Step 1 JSON invalid: ${e.message}`);
         }
 
-        // Step 2: Rate Plan
         try {
           step2Obj = JSON.parse(step2RatePlanJson || "{}");
           setStep2Error(null);
@@ -1988,7 +2061,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
           throw new Error(`Step 2 JSON invalid: ${e.message}`);
         }
 
-        // Step 3: Charge (optional)
         if (step3ChargeJson.trim()) {
           try {
             step3Obj = JSON.parse(step3ChargeJson);
@@ -2012,18 +2084,13 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
         });
       }
 
-      // ===========================================================
-      // 3️⃣ VALIDATE REQUIRED PAYLOAD (product is mandatory)
-      // ===========================================================
+      // PRODUCT MANDATORY
       if (!productPayload) {
         throw new Error(
           "No product payload found. Please review the steps before executing."
         );
       }
 
-      // ===========================================================
-      // 4️⃣ FINAL PAYLOAD SENT TO LAMBDA
-      // ===========================================================
       const payload = {
         clientId,
         clientSecret,
@@ -2037,9 +2104,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
       console.log("🔥 FINAL PAYLOAD SENT TO ZUORA LAMBDA →");
       console.log(JSON.stringify(payload, null, 2));
 
-      // ===========================================================
-      // 5️⃣ CALL LAMBDA
-      // ===========================================================
       const res = await fetch(
         "https://7ajwemkf19.execute-api.us-east-2.amazonaws.com/demo/zuora/product",
         {
@@ -2059,9 +2123,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
 
       console.log("🔍 LAMBDA RESPONSE:", data);
 
-      // ===========================================================
-      // 6️⃣ REAL ERROR CHECKING (IMPORTANT!)
-      // ===========================================================
       const isFailure =
         data.error ||
         data.Error ||
@@ -2086,9 +2147,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
         throw new Error(errMsg);
       }
 
-      // ===========================================================
-      // 7️⃣ SUCCESS HANDLING
-      // ===========================================================
       const successMessage =
         data.message || "Product + RatePlan + Charges created!";
 
@@ -2104,11 +2162,7 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
         ratePlanIds: data.ratePlanIds || [],
         chargeIds: data.chargeIds || [],
       });
-
-      // setShowPayload(false);
     } catch (err: any) {
-      // console.error("❌ EXECUTION ERROR:", err.message || err);
-
       setToastMessage({
         message: err.message || "Execution failed",
         type: "error",
@@ -2117,7 +2171,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
       setExecuting(false);
     }
   };
-
 
   const handleRefreshConversation = () => {
     // 1️⃣ Create a brand-new conversation ID
@@ -2193,9 +2246,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
       message: "Conversation reset — new chat started.",
     });
   };
-
-
-
 
   const resetZuoraApiPayloadForChat = (convId: string) => {
     setConversationPayloads((prev) => {
@@ -2433,7 +2483,7 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
         <div
           className="flex w-[36%] flex-col border-r border-gray-200
                   bg-gradient-to-b from-[#F9FAFB] to-white min-h-0"
-          style={{ height: "87vh" }}
+          style={{ height: "95vh" }}
         >
           <div className="border-b border-gray-200 p-6">
             <div className="flex items-center justify-between">
@@ -2447,14 +2497,9 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
                 variant="ghost"
                 size="sm"
                 className="text-gray-600 hover:text-gray-900"
-
                 onClick={handleRefreshConversation}
-
               >
-                <RotateCcw
-
-                  className="h-4 w-4 cursor-pointer text-gray-500 hover:text-gray-700"
-                />
+                <RotateCcw className="h-4 w-4 cursor-pointer text-gray-500 hover:text-gray-700" />
               </Button>
             </div>
           </div>
@@ -2739,222 +2784,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
                   </Card>
                 )}
 
-              {/* Update Product Flow UI */}
-              {currentFlow === "update-product" &&
-                updateProductStep === "show-summary" &&
-                selectedProduct && (
-                  <Card className="border-blue-100 bg-blue-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="h-5 w-5 text-blue-600" />
-                        <h3 className="font-medium text-blue-900">
-                          Product Found
-                        </h3>
-                      </div>
-                      <div>
-                        <span className="font-medium">Product Name:</span>{" "}
-                        {selectedProduct.name}
-                      </div>
-                      <div>
-                        <span className="font-medium">SKU:</span>{" "}
-                        {selectedProduct.sku}
-                      </div>
-                      <div>
-                        <span className="font-medium">Description:</span>{" "}
-                        {selectedProduct.description}
-                      </div>
-                      <div>
-                        <span className="font-medium">Effective Start:</span>{" "}
-                        {selectedProduct.effectiveStart}
-                      </div>
-                      <div>
-                        <span className="font-medium">Effective End:</span>{" "}
-                        {selectedProduct.effectiveEnd}
-                      </div>
-                      <div>
-                        <span className="font-medium">Currency:</span>{" "}
-                        {selectedProduct.currency}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-              {currentFlow === "update-product" &&
-                updateProductStep === "confirm" &&
-                selectedProduct && (
-                  <Card className="border-orange-100 bg-orange-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="h-5 w-5 text-orange-600" />
-                        <h3 className="font-medium text-orange-900">
-                          Confirm Update
-                        </h3>
-                      </div>
-                      <div className="text-xs text-orange-800">
-                        ⚠️ Note: This change will be effective for new
-                        subscriptions only.
-                      </div>
-                      <div>
-                        <span className="font-medium">Product:</span>{" "}
-                        {selectedProduct.description}
-                      </div>
-                      <div>
-                        <span className="font-medium">Change:</span>{" "}
-                        {selectedAttribute} → {newAttributeValue}
-                      </div>
-                      <p>Do you want me to proceed with this update?</p>
-                    </CardContent>
-                  </Card>
-                )}
-
-              {/* Expire Product Flow UI */}
-              {currentFlow === "expire-product" &&
-                expireProductStep === "show-details" &&
-                selectedProduct && (
-                  <Card className="border-orange-100 bg-orange-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="h-5 w-5 text-orange-600" />
-                        <h3 className="font-medium text-orange-900">
-                          Product Found
-                        </h3>
-                      </div>
-                      <div>
-                        <span className="font-medium">Product Name:</span>{" "}
-                        {selectedProduct.name}
-                      </div>
-                      <div>
-                        <span className="font-medium">SKU:</span>{" "}
-                        {selectedProduct.sku}
-                      </div>
-                      <div>
-                        <span className="font-medium">Effective Start:</span>{" "}
-                        {selectedProduct.effectiveStart}
-                      </div>
-                      <div>
-                        <span className="font-medium">Effective End:</span>{" "}
-                        {selectedProduct.effectiveEnd}
-                      </div>
-                      <p className="mt-3">
-                        Would you like to change its End Date to expire it?
-                      </p>
-                    </CardContent>
-                  </Card>
-                )}
-
-              {currentFlow === "expire-product" &&
-                expireProductStep === "dependency-check" &&
-                selectedProduct && (
-                  <Card className="border-green-100 bg-green-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5 text-green-600" />
-                        <h3 className="font-medium text-green-900">
-                          Expiration Settings
-                        </h3>
-                      </div>
-                      <div>
-                        <span className="font-medium">Product:</span>{" "}
-                        {selectedProduct.description}
-                      </div>
-                      <div>
-                        <span className="font-medium">
-                          New Effective End Date:
-                        </span>{" "}
-                        {expireDate}
-                      </div>
-                      <p className="mt-3">
-                        Before expiring the product, I'll check if there are any
-                        active or future-dated rate plans linked to it. Continue
-                        even if active rate plans exist?
-                      </p>
-                    </CardContent>
-                  </Card>
-                )}
-
-              {currentFlow === "expire-product" &&
-                expireProductStep === "confirm" &&
-                selectedProduct && (
-                  <Card className="border-blue-100 bg-blue-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <AlertCircle className="h-5 w-5 text-blue-600" />
-                        <h3 className="font-medium text-blue-900">
-                          Confirm Expiration
-                        </h3>
-                      </div>
-                      <div>
-                        <span className="font-medium">Product:</span>{" "}
-                        {selectedProduct.description}
-                      </div>
-                      <div>
-                        <span className="font-medium">
-                          New Effective End Date:
-                        </span>{" "}
-                        {expireDate}
-                      </div>
-                      <p className="mt-3">Do you confirm this update?</p>
-                    </CardContent>
-                  </Card>
-                )}
-
-              {/* View Product Flow UI */}
-              {currentFlow === "view-product" &&
-                viewProductStep === "show-summary" &&
-                selectedProduct && (
-                  <Card className="border-cyan-100 bg-cyan-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <Eye className="h-5 w-5 text-cyan-600" />
-                        <h3 className="font-medium text-cyan-900">
-                          Product Details
-                        </h3>
-                      </div>
-                      <div>
-                        <span className="font-medium">Product ID:</span>{" "}
-                        {selectedProduct.id}
-                      </div>
-                      <div>
-                        <span className="font-medium">SKU:</span>{" "}
-                        {selectedProduct.sku}
-                      </div>
-                      <div>
-                        <span className="font-medium">Effective Start:</span>{" "}
-                        {selectedProduct.effectiveStart}
-                      </div>
-                      <div>
-                        <span className="font-medium">Effective End:</span>{" "}
-                        {selectedProduct.effectiveEnd}
-                      </div>
-                      <div>
-                        <span className="font-medium">Org Units:</span>{" "}
-                        {selectedProduct.orgUnits}
-                      </div>
-                      <p className="mt-3">
-                        Would you like to view more details?
-                      </p>
-                    </CardContent>
-                  </Card>
-                )}
-
-              {currentFlow === "view-product" &&
-                viewProductStep === "show-detail" &&
-                selectedProduct && (
-                  <Card className="border-purple-100 bg-purple-50">
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <BookOpen className="h-5 w-5 text-purple-600" />
-                        <h3 className="font-medium text-purple-900">
-                          {viewDetailType === "Rate Plans & Charges"
-                            ? "Rate Plans"
-                            : viewDetailType}
-                        </h3>
-                      </div>
-                      <p>Would you like to view another detail type?</p>
-                    </CardContent>
-                  </Card>
-                )}
-
               {currentFlow === "idle" && !showPayload && <div> </div>}
 
               {/* {showNewMessagesPill && (
@@ -3006,9 +2835,9 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
           </div>
         </div>
 
-        {/* Right Panel - Zuora Workspace */}
+        {/* Right Panel - max-h-[95vh]  Zuora Workspace */}
         <div
-          className="w-[56%] overflow-y-auto p-8"
+          className="w-[56%]   overflow-y-auto p-8"
           style={{ overscrollBehavior: "contain" }}
         >
           {!isConnected ? (
@@ -3143,7 +2972,7 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
           ) : (
             <div className="space-y-6">
               {/* 🔥 PARENT SCROLL WRAPPER */}
-              <div className="max-h-[75vh] overflow-y-auto pr-2">
+              <div className="max-h-[75vh]   overflow-y-auto pr-2">
                 {/* 3-step preview (Product, Rate Plan, Charge) */}
                 {showPayload && zuoraSteps.length > 0 && (
                   <div className="space-y-6">
@@ -3189,6 +3018,7 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
                             <textarea
                               className="h-56 w-full rounded-lg border bg-slate-900 p-4 font-mono text-xs text-green-400"
                               value={step.json}
+                              spellCheck={false} 
                               onChange={(e) => {
                                 const val = e.target.value;
                                 setZuoraSteps((prev) =>
@@ -3243,20 +3073,6 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
                     ))}
 
                     {/* Button stays AFTER scroll area */}
-                    <div className="flex flex-col gap-3 pt-2">
-                      <Button
-                        className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-60"
-                        onClick={handleExecute}
-                        disabled={
-                          executing || zuoraSteps.some((s) => s.jsonError)
-                        }
-                      >
-                        <CheckCircle2 className="mr-2 h-4 w-4" />
-                        {executing
-                          ? "Creating in Zuora…"
-                          : "Create product, product rate plan, rate plan charge"}
-                      </Button>
-                    </div>
                   </div>
                 )}
 
@@ -3286,6 +3102,24 @@ ratePlanChargePayload = chargePayloads.length > 0 ? chargePayloads : null;
                     </div>
                   )}
               </div>
+              {showPayload && zuoraSteps.length > 0 && (
+                <div className="flex flex-col gap-3 pt-2">
+                  <Button
+                    className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-60"
+                    onClick={handleExecute}
+
+                    disabled={
+                      executing ||
+                      zuoraSteps.some((s) => s.jsonError) ||
+                      // 🔴 disable if any payload still has PLACEHOLDER text
+                      zuoraSteps.some((s) => s.json?.includes("PLACEHOLDER"))
+                    }
+                  >
+                    <CheckCircle2 className="mr-2 h-4 w-4" />
+                    {executing ? "Creating in Zuora…" : "Send to Zuora"}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </div>
