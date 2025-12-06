@@ -149,6 +149,8 @@ interface ChatMessage {
   role: "assistant" | "user";
   content: string;
   timestamp: Date;
+  // true when this assistant message is a direct reply from the LLM chat API
+  fromApi?: boolean;
 }
 
 interface CompletedFlow {
@@ -799,6 +801,7 @@ export default function WorkflowPage() {
               role: m.role,
               content: m.content,
               timestamp: new Date(m.timestamp),
+              fromApi: !!m.fromApi, // ⬅️ restore flag if present
             }));
           if (restored.length > 0) {
             setChatMessages(restored);
@@ -833,6 +836,7 @@ export default function WorkflowPage() {
         role: m.role,
         content: m.content,
         timestamp: m.timestamp.toISOString(),
+        fromApi: m.fromApi === true, // ⬅️ persist flag
       }));
       localStorage.setItem(
         `${CHAT_MESSAGES_KEY_PREFIX}:${activeConversationId}`,
@@ -1019,12 +1023,35 @@ export default function WorkflowPage() {
       let citationsSuffix = "";
       if (Array.isArray(data?.citations) && data.citations.length > 0) {
         const firstThree = data.citations.slice(0, 3);
-        const labels = firstThree.map((c: any) => c?.title || c?.id).join(", ");
+
+        const links = firstThree
+          .map((c: any, idx: number) => {
+            const rawLabel = c?.title || c?.id || `Source ${idx + 1}`;
+            // basic HTML-escape for label
+            const label = String(rawLabel)
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+
+            const url = typeof c?.url === "string" ? c.url : undefined;
+            if (!url) return label;
+
+            const safeUrl =
+              url.startsWith("http://") || url.startsWith("https://")
+                ? url
+                : `https://${url}`;
+                return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${label}</a>`;
+
+          })
+          .join(", ");
+
         const more =
           data.citations.length > 3
             ? ` +${data.citations.length - 3} more`
             : "";
-        citationsSuffix = `\n\n— sources: ${labels}${more}`;
+
+        // appended to HTML LLM answer, rendered via dangerouslySetInnerHTML
+        citationsSuffix = `<div class="mt-3 text-xs text-gray-500">— sources: ${links}${more}</div>`;
       }
 
       // ======================================================
@@ -1121,10 +1148,10 @@ export default function WorkflowPage() {
         setZuoraSteps(newSteps);
 
         setShowPayload(true);
-        addAssistantMessage(
-          `The Zuora API payloads are ready. You can review and make any edits in the workspace preview on the right`,
-          150
-        );
+        // addAssistantMessage(
+        //   `The Zuora API payloads are ready. You can review and make any edits in the workspace preview on the right`,
+        //   150
+        // );
 
         // -----------------------------
         // SAVE PAYLOAD PER CONVERSATION
@@ -1149,6 +1176,7 @@ export default function WorkflowPage() {
           role: "assistant",
           content: String(reply) + citationsSuffix,
           timestamp: new Date(),
+          fromApi: true, // ⬅️ mark as LLM/API reply
         },
       ]);
     } catch (e) {
@@ -2513,30 +2541,81 @@ export default function WorkflowPage() {
               {completedFlows.map((flow) => (
                 <Card key={flow.id} className="border-green-200 bg-green-50">
                   <CardHeader
-                    className="cursor-pointer p-4"
-                    onClick={() => toggleFlowExpansion(flow.id)}
+                    onClick={() =>
+                      setZuoraSteps((prev) =>
+                        prev.map((s) =>
+                          s.id === step.id ? { ...s, expanded: !s.expanded } : s
+                        )
+                      )
+                    }
+                    className="cursor-pointer"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5 text-green-600" />
-                        <div>
-                          <CardTitle className="text-sm font-semibold text-green-900">
-                            {flow.title}
-                          </CardTitle>
-                          {flow.summary && (
-                            <p className="text-xs text-green-700">
-                              {flow.summary}
-                            </p>
-                          )}
-                        </div>
+                    <div className="flex justify-between gap-3">
+                      {/* left: title + description */}
+                      <div className="space-y-1 min-w-0">
+                        <CardTitle className="text-base font-semibold">
+                          {step.title || `Step ${index + 1}`}
+                        </CardTitle>
+                        <CardDescription className="text-sm text-muted-foreground">
+                          {step.description}
+                        </CardDescription>
                       </div>
-                      <ChevronDown
-                        className={`h-4 w-4 text-green-600 transition-transform ${
-                          flow.isExpanded ? "rotate-180" : ""
-                        }`}
-                      />
+
+                      {/* right: copy icon + chevron, aligned at end */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="h-8 w-8"
+                          onClick={async (e) => {
+                            e.stopPropagation(); // don't toggle expand
+                            try {
+                              await navigator.clipboard.writeText(step.json);
+                              setToastMessage({
+                                message: `Copied ${
+                                  step.title || `Step ${index + 1}`
+                                } payload`,
+                                type: "success",
+                              });
+                            } catch {
+                              setToastMessage({
+                                message: "Copy failed. Please copy manually.",
+                                type: "error",
+                              });
+                            }
+                          }}
+                        >
+                          {/* your copy SVG/icon */}
+                          <svg
+                            className="w-4 h-4"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <rect
+                              x="9"
+                              y="9"
+                              width="13"
+                              height="13"
+                              rx="2"
+                              ry="2"
+                            />
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                          </svg>
+                        </Button>
+
+                        <ChevronDown
+                          className={`h-4 w-4 transition-transform ${
+                            step.expanded ? "rotate-180" : ""
+                          }`}
+                        />
+                      </div>
                     </div>
                   </CardHeader>
+
                   {flow.isExpanded && (
                     <CardContent className="space-y-3 border-t border-green-200 p-4">
                       {flow.messages.map((message, index) => (
@@ -2555,7 +2634,8 @@ export default function WorkflowPage() {
               <div className="flex flex-col flex-1 overflow-y-auto space-y-4 px-4 py-6">
                 {chatMessages.map((message, index) => {
                   const isUser = message.role === "user";
-
+                  const isApiAssistant =
+                    message.role === "assistant" && message.fromApi;
                   return (
                     <div
                       key={index}
@@ -2580,7 +2660,9 @@ export default function WorkflowPage() {
                         {/* ASSISTANT MESSAGE (HTML) */}
                         {!isUser && (
                           <div
-                            className="prose prose-sm max-w-full dark:prose-invert break-words"
+                            className="prose prose-sm max-w-full dark:prose-invert break-words
+                                     [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto
+         [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap"
                             dangerouslySetInnerHTML={{
                               __html: message.content,
                             }}
@@ -2595,36 +2677,37 @@ export default function WorkflowPage() {
                           })}
                         </div>
 
-                        {/* COPY BUTTON */}
-                        <button
-                          className="mt-2 text-xs text-blue-600 hover:underline flex items-center gap-1"
-                          onClick={() => {
-                            navigator.clipboard.writeText(
-                              typeof message.content === "string"
-                                ? message.content.replace(/<[^>]*>?/gm, "")
-                                : ""
-                            );
-                            setToastMessage({
-                              message: `Copied message`,
-                              type: "success",
-                            });
-                          }}
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            viewBox="0 0 24 24"
+                        {/* COPY BUTTON – only for LLM replies coming from the chat API */}
+                        {isApiAssistant && (
+                          <button
+                            className="mt-2 text-xs text-blue-600 hover:underline flex items-center gap-1"
+                            onClick={() => {
+                              navigator.clipboard.writeText(
+                                typeof message.content === "string"
+                                  ? message.content.replace(/<[^>]*>?/gm, "")
+                                  : ""
+                              );
+                              setToastMessage({
+                                message: `Copied message`,
+                                type: "success",
+                              });
+                            }}
                           >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 6h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                            />
-                          </svg>
-                          Copy
-                        </button>
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 6h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                              />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -2990,20 +3073,72 @@ export default function WorkflowPage() {
                           }
                           className="cursor-pointer"
                         >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <CardTitle>
+                          <div className="flex justify-between gap-3">
+                            {/* left: title + description */}
+                            <div className="space-y-1 min-w-0">
+                              <CardTitle className="text-base font-semibold">
                                 {step.title || `Step ${index + 1}`}
                               </CardTitle>
-                              <CardDescription>
+                              <CardDescription className="text-sm text-muted-foreground">
                                 {step.description}
                               </CardDescription>
                             </div>
-                            <ChevronDown
-                              className={`h-4 w-4 transition-transform ${
-                                step.expanded ? "rotate-180" : ""
-                              }`}
-                            />
+
+                            {/* right: copy icon + chevron, aligned at end */}
+                            <div className="flex items-center gap-2 shrink-0">
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                className="h-8 w-8"
+                                onClick={async (e) => {
+                                  e.stopPropagation(); // don't toggle expand
+                                  try {
+                                    await navigator.clipboard.writeText(
+                                      step.json
+                                    );
+                                    setToastMessage({
+                                      message: `Copied ${
+                                        step.title || `Step ${index + 1}`
+                                      } payload`,
+                                      type: "success",
+                                    });
+                                  } catch {
+                                    setToastMessage({
+                                      message:
+                                        "Copy failed. Please copy manually.",
+                                      type: "error",
+                                    });
+                                  }
+                                }}
+                              >
+                                {/* your copy SVG/icon */}
+                                <svg
+                                  className="w-4 h-4"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.5"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <rect
+                                    x="9"
+                                    y="9"
+                                    width="13"
+                                    height="13"
+                                    rx="2"
+                                    ry="2"
+                                  />
+                                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                </svg>
+                              </Button>
+
+                              <ChevronDown
+                                className={`h-4 w-4 transition-transform ${
+                                  step.expanded ? "rotate-180" : ""
+                                }`}
+                              />
+                            </div>
                           </div>
                         </CardHeader>
 
@@ -3018,7 +3153,7 @@ export default function WorkflowPage() {
                             <textarea
                               className="h-56 w-full rounded-lg border bg-slate-900 p-4 font-mono text-xs text-green-400"
                               value={step.json}
-                              spellCheck={false} 
+                              spellCheck={false}
                               onChange={(e) => {
                                 const val = e.target.value;
                                 setZuoraSteps((prev) =>
@@ -3035,38 +3170,6 @@ export default function WorkflowPage() {
                                 );
                               }}
                             />
-
-                            <div className="mt-3 flex gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={async () => {
-                                  try {
-                                    setCopying(true);
-                                    await navigator.clipboard.writeText(
-                                      step.json
-                                    );
-
-                                    setToastMessage({
-                                      message: `Copied ${
-                                        step.title || `step ${index + 1}`
-                                      } payload`,
-                                      type: "success",
-                                    });
-                                  } catch {
-                                    setToastMessage({
-                                      message:
-                                        "Copy failed. Select and copy manually.",
-                                      type: "error",
-                                    });
-                                  } finally {
-                                    setCopying(false);
-                                  }
-                                }}
-                              >
-                                Copy Step {index + 1}
-                              </Button>
-                            </div>
                           </CardContent>
                         )}
                       </Card>
@@ -3107,7 +3210,6 @@ export default function WorkflowPage() {
                   <Button
                     className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-60"
                     onClick={handleExecute}
-
                     disabled={
                       executing ||
                       zuoraSteps.some((s) => s.jsonError) ||
