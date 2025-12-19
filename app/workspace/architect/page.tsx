@@ -719,7 +719,7 @@ export default function WorkflowPage() {
     {
       role: "assistant",
       content:
-        "I’m Zia — your AI Architect. Let’s connect to Zuora and get started.",
+        "Hi, I’m Zia — your AI Architect, here to help design the right Zuora solutions for your business.",
       timestamp: new Date(),
     },
   ]);
